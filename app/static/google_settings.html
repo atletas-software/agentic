@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sync Settings</title>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 24px; background: #f7f8fb; color: #1f2937; }
+      .container { max-width: 760px; margin: 0 auto; }
+      .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+      .nav a { margin-right: 12px; color: #2563eb; text-decoration: none; font-weight: 600; }
+      input, select { padding: 8px; width: 100%; margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; }
+      button { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; cursor: pointer; }
+      .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .help { color: #4b5563; font-size: 14px; margin-top: 8px; }
+      .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .status-item { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; background: #fafafa; }
+      .status-label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+      .status-value { font-weight: 600; }
+      .skip-row { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin-top: 8px; background: #fff7ed; }
+      .skip-meta { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+      .skip-reason { color: #92400e; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Sync Settings</h2>
+      <div class="nav">
+        <a href="/app/sheets">Dashboard</a>
+      </div>
+
+      <div class="card">
+        <label>Logged in user</label>
+        <input id="userId" value="" readonly />
+      </div>
+
+      <div class="card">
+        <h3>Per-user Polling Interval</h3>
+        <label>Polling interval</label>
+        <select id="pollingInterval">
+          <option value="30">30 seconds</option>
+          <option value="35">35 seconds</option>
+          <option value="60">1 minute</option>
+          <option value="90">1 minute 30 seconds</option>
+          <option value="120">2 minutes</option>
+          <option value="150">2 minutes 30 seconds</option>
+          <option value="180">3 minutes</option>
+          <option value="210">3 minutes 30 seconds</option>
+          <option value="240">4 minutes</option>
+          <option value="270">4 minutes 30 seconds</option>
+          <option value="300">5 minutes</option>
+        </select>
+        <div class="help">
+          Each user's active sheet is checked using this interval.
+        </div>
+        <div style="margin-top:12px;">
+          <button id="loadBtn">Load</button>
+          <button id="saveBtn" class="primary">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Sync Status</h3>
+        <div class="status-grid">
+          <div class="status-item">
+            <div class="status-label">Last Run Time</div>
+            <div id="lastRunAt" class="status-value">-</div>
+          </div>
+          <div class="status-item">
+            <div class="status-label">Next Due Time</div>
+            <div id="nextDueAt" class="status-value">-</div>
+          </div>
+          <div class="status-item">
+            <div class="status-label">Last Run Status</div>
+            <div id="lastRunStatus" class="status-value">-</div>
+          </div>
+        </div>
+        <div style="margin-top:12px;">
+          <button id="refreshStatusBtn">Refresh Status</button>
+          <button id="manualSyncBtn" class="primary">Run Manual Sync</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Skipped Rows</h3>
+        <div class="help">Rows skipped due to missing required values.</div>
+        <div id="skippedRowsList"></div>
+      </div>
+
+    </div>
+
+    <script>
+      const userIdEl = document.getElementById("userId");
+      const pollingIntervalEl = document.getElementById("pollingInterval");
+      const lastRunAtEl = document.getElementById("lastRunAt");
+      const nextDueAtEl = document.getElementById("nextDueAt");
+      const lastRunStatusEl = document.getElementById("lastRunStatus");
+      const skippedRowsListEl = document.getElementById("skippedRowsList");
+      const token = localStorage.getItem("auth_token");
+      const authEmail = localStorage.getItem("auth_email");
+      const authUserId = localStorage.getItem("auth_user_id");
+      if (!token) window.location.href = "/app/login";
+      userIdEl.value = authEmail || authUserId || "Authenticated user";
+
+      function headers() {
+        return {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`
+        };
+      }
+
+      function formatDateTime(value) {
+        if (!value) return "Never";
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return value;
+        return d.toLocaleString();
+      }
+
+      function formatInterval(seconds) {
+        if (!seconds) return "-";
+        if (seconds < 60) return `${seconds} seconds`;
+        const mins = Math.floor(seconds / 60);
+        const rem = seconds % 60;
+        if (rem === 0) return `${mins} minute${mins > 1 ? "s" : ""}`;
+        return `${mins} minute${mins > 1 ? "s" : ""} ${rem} seconds`;
+      }
+
+      async function loadSettings() {
+        const res = await fetch("/integrations/google/sync-settings", { headers: headers() });
+        const data = await res.json();
+        if (data.settings && data.settings.polling_interval_seconds) {
+          pollingIntervalEl.value = String(data.settings.polling_interval_seconds);
+        }
+        await loadStatus();
+      }
+
+      async function loadStatus() {
+        const res = await fetch("/integrations/google/sync-status", { headers: headers() });
+        const data = await res.json();
+        const status = data.status || {};
+        const intervalLabel = formatInterval(status.polling_interval_seconds);
+        lastRunAtEl.textContent = `${formatDateTime(status.last_run_at)} (${intervalLabel})`;
+        nextDueAtEl.textContent = formatDateTime(status.next_due_at);
+        lastRunStatusEl.textContent = status.last_run_status || "-";
+        await loadSkippedRows();
+      }
+
+      async function loadSkippedRows() {
+        const res = await fetch("/sync/skipped-rows?limit=50", { headers: headers() });
+        const data = await res.json();
+        const rows = data.skipped_rows || [];
+        skippedRowsListEl.innerHTML = "";
+        if (rows.length === 0) {
+          skippedRowsListEl.innerHTML = '<div class="help">No skipped rows found.</div>';
+          return;
+        }
+        rows.forEach((row) => {
+          const div = document.createElement("div");
+          div.className = "skip-row";
+          div.innerHTML = `
+            <div class="skip-meta">${formatDateTime(row.created_at)} • ${row.tab_name || "Sheet"} • Row ${row.row_number}</div>
+            <div class="skip-reason">${row.reason || "Skipped"}</div>
+          `;
+          skippedRowsListEl.appendChild(div);
+        });
+      }
+
+      document.getElementById("loadBtn").onclick = loadSettings;
+      document.getElementById("refreshStatusBtn").onclick = loadStatus;
+      document.getElementById("manualSyncBtn").onclick = async () => {
+        const res = await fetch("/sync/run-once", {
+          method: "POST",
+          headers: headers(),
+        });
+        const data = await res.json();
+        await loadStatus();
+      };
+      document.getElementById("saveBtn").onclick = async () => {
+        const pollingSeconds = Number(pollingIntervalEl.value || 0);
+        const res = await fetch("/integrations/google/sync-settings", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ polling_interval_seconds: pollingSeconds }),
+        });
+        const data = await res.json();
+        await loadStatus();
+      };
+
+      loadSettings();
+    </script>
+  </body>
+</html>

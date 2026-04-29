@@ -1,0 +1,83 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sheet-mcp-api
+    env_file:
+      - .env
+    environment:
+      # Force container-network defaults unless explicitly overridden.
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
+    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}"]
+    ports:
+      - "8000:8000"
+    volumes:
+      # Keep Google service-account credentials outside image layers.
+      - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    init: true
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sheet-mcp-worker
+    command: ["python", "-m", "app.workers.run_worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
+      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
+      DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
+    volumes:
+      - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: sheet-mcp-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sheet-mcp-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strongpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-athlete}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-athlete}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

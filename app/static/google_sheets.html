@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Google Sheets Browser</title>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 24px; background: #f7f8fb; color: #1f2937; }
+      .container { max-width: 1100px; margin: 0 auto; }
+      .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .nav a { margin-right: 12px; color: #2563eb; text-decoration: none; font-weight: 600; }
+      button { padding: 8px 12px; margin-right: 8px; cursor: pointer; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; }
+      button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      input, select, textarea { padding: 8px; width: 100%; margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; }
+      textarea { min-height: 120px; }
+      .saved-item { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+      .active-pill { font-size: 12px; color: #065f46; background: #d1fae5; padding: 2px 8px; border-radius: 999px; margin-left: 8px; }
+      pre { background: #111827; color: #e5e7eb; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+      .actions-row { margin-top: 10px; }
+      .modal-backdrop { position: fixed; inset: 0; background: rgba(17,24,39,.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
+      .modal { width: min(520px, 92vw); background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 18px 40px rgba(0,0,0,.22); padding: 16px; }
+      .modal h4 { margin: 0 0 8px; }
+      .modal p { margin: 0 0 14px; color: #374151; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Google Sheets Dashboard</h2>
+      <div class="nav">
+        <a href="/app/connect">Connect</a>
+        <a href="/app/sheets">Dashboard</a>
+        <a href="/app/settings" title="Sync Settings">⚙ Settings</a>
+      </div>
+
+      <div class="card">
+        <label>Logged in user</label>
+        <input id="userId" value="" readonly />
+        <div class="actions-row">
+          <button id="syncToggleBtn" class="primary">Enable Sync</button>
+          <span id="syncToggleStatus" style="font-size:13px;color:#4b5563;"></span>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Available Google Sheets</h3>
+          <div class="actions-row">
+            <button id="loadSheetsBtn">Load Sheets</button>
+          </div>
+          <label>Sheets</label>
+          <select id="sheetSelect"></select>
+          <div class="actions-row">
+            <button id="saveSelectedBtn" class="primary">Save Sheet</button>
+          </div>
+          <label style="margin-top:10px;">Tabs in selected sheet</label>
+          <select id="tabSelect"></select>
+        </div>
+
+        <div class="card">
+          <h3>Saved Sheets</h3>
+          <div class="actions-row">
+            <button id="loadSavedBtn">Refresh Saved List</button>
+          </div>
+          <div id="savedSheetsList"></div>
+        </div>
+      </div>
+
+      <!-- <div class="card">
+        <h3>Quick Read / Update</h3>
+        <label>Range</label>
+        <input id="rangeInput" value="Sheet1" />
+        <div class="actions-row">
+          <button id="readBtn">Read</button>
+        </div>
+        <label style="margin-top:10px;">Update Values (JSON 2D array)</label>
+        <textarea id="valuesInput">[["Header1","Header2"],["Value1","Value2"]]</textarea>
+        <div class="actions-row">
+          <button id="updateBtn">Update</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Logs</h3>
+        <pre id="logs">Ready.</pre>
+      </div> -->
+    </div>
+    <div id="modalBackdrop" class="modal-backdrop">
+      <div class="modal">
+        <h4 id="modalTitle">Confirm</h4>
+        <p id="modalMessage"></p>
+        <div class="modal-actions">
+          <button id="modalCancelBtn">Cancel</button>
+          <button id="modalConfirmBtn" class="primary">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      const logEl = document.getElementById("logs");
+      const userIdEl = document.getElementById("userId");
+      const sheetSelect = document.getElementById("sheetSelect");
+      const tabSelect = document.getElementById("tabSelect");
+      const savedSheetsListEl = document.getElementById("savedSheetsList");
+      const rangeInput = document.getElementById("rangeInput");
+      const valuesInput = document.getElementById("valuesInput");
+      const modalBackdrop = document.getElementById("modalBackdrop");
+      const modalTitle = document.getElementById("modalTitle");
+      const modalMessage = document.getElementById("modalMessage");
+      const modalCancelBtn = document.getElementById("modalCancelBtn");
+      const modalConfirmBtn = document.getElementById("modalConfirmBtn");
+      const syncToggleBtn = document.getElementById("syncToggleBtn");
+      const syncToggleStatus = document.getElementById("syncToggleStatus");
+      const token = localStorage.getItem("auth_token");
+      const authEmail = localStorage.getItem("auth_email");
+      const authUserId = localStorage.getItem("auth_user_id");
+      if (!token) window.location.href = "/app/login";
+      userIdEl.value = authEmail || authUserId || "Authenticated user";
+
+      function headers() {
+        return {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`
+        };
+      }
+      function log(msg) {
+        if (!logEl) return;
+        const line = typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
+        logEl.textContent = `${line}\n\n${logEl.textContent}`;
+      }
+      function showModal({ title, message, confirmText = "Confirm", cancelText = "Cancel", hideCancel = false }) {
+        return new Promise((resolve) => {
+          modalTitle.textContent = title;
+          modalMessage.textContent = message;
+          modalConfirmBtn.textContent = confirmText;
+          modalCancelBtn.textContent = cancelText;
+          modalCancelBtn.style.display = hideCancel ? "none" : "inline-block";
+          modalBackdrop.style.display = "flex";
+
+          const close = (result) => {
+            modalBackdrop.style.display = "none";
+            modalConfirmBtn.onclick = null;
+            modalCancelBtn.onclick = null;
+            resolve(result);
+          };
+          modalConfirmBtn.onclick = () => close(true);
+          modalCancelBtn.onclick = () => close(false);
+        });
+      }
+
+      async function refreshSyncToggle() {
+        const res = await fetch("/integrations/google/sync-settings", { headers: headers() });
+        const data = await res.json();
+        const enabled = Boolean(data?.settings?.sync_enabled);
+        syncToggleBtn.textContent = enabled ? "Disable Sync" : "Enable Sync";
+        syncToggleBtn.className = enabled ? "" : "primary";
+        syncToggleStatus.textContent = enabled ? "Sync is enabled" : "Sync is disabled";
+      }
+
+      async function loadSavedSheets(autoSelectActive = true) {
+        const res = await fetch("/integrations/google/saved-sheets", { headers: headers() });
+        const data = await res.json();
+        savedSheetsListEl.innerHTML = "";
+        let activeSheet = null;
+        (data.saved_sheets || []).forEach((sheet) => {
+          if (sheet.is_active) activeSheet = sheet;
+          const row = document.createElement("div");
+          row.className = "saved-item";
+          const left = document.createElement("div");
+          left.innerHTML = `<strong>${sheet.spreadsheet_name}</strong>${sheet.is_active ? '<span class="active-pill">ACTIVE</span>' : ''}`;
+          const right = document.createElement("div");
+          const activateBtn = document.createElement("button");
+          activateBtn.textContent = "Set Active";
+          activateBtn.onclick = async () => {
+            const ok = await showModal({
+              title: "Make Sheet Active",
+              message: `Are you sure you want to make "${sheet.spreadsheet_name}" active?`,
+              confirmText: "Yes, Set Active",
+              cancelText: "Cancel"
+            });
+            if (!ok) return;
+            const resp = await fetch(`/integrations/google/saved-sheets/${sheet.spreadsheet_id}/activate`, {
+              method: "POST",
+              headers: headers()
+            });
+            const payload = await resp.json();
+            await showModal({
+              title: "Success",
+              message: "Sheet marked active.",
+              confirmText: "OK",
+              hideCancel: true
+            });
+            log(payload);
+            await loadSavedSheets(true);
+            await ensureSheetInDropdownAndSelect(sheet.spreadsheet_id, sheet.spreadsheet_name);
+            await loadTabsForSelectedSheet();
+            await previewRead();
+          };
+          const detailsLink = document.createElement("a");
+          detailsLink.href = `/app/sheets/details?spreadsheet_id=${encodeURIComponent(sheet.spreadsheet_id)}`;
+          detailsLink.textContent = "Details";
+          detailsLink.style.marginLeft = "8px";
+          right.appendChild(activateBtn);
+          right.appendChild(detailsLink);
+          row.appendChild(left);
+          row.appendChild(right);
+          savedSheetsListEl.appendChild(row);
+        });
+        log({ saved_sheets: data });
+        if (autoSelectActive && activeSheet) {
+          await ensureSheetInDropdownAndSelect(activeSheet.spreadsheet_id, activeSheet.spreadsheet_name);
+        }
+      }
+
+      async function ensureSheetInDropdownAndSelect(spreadsheetId, spreadsheetName) {
+        let existing = Array.from(sheetSelect.options).find((o) => o.value === spreadsheetId);
+        if (!existing) {
+          existing = document.createElement("option");
+          existing.value = spreadsheetId;
+          existing.textContent = spreadsheetName;
+          existing.dataset.name = spreadsheetName;
+          sheetSelect.appendChild(existing);
+        }
+        sheetSelect.value = spreadsheetId;
+      }
+
+      async function loadTabsForSelectedSheet() {
+        const opt = sheetSelect.options[sheetSelect.selectedIndex];
+        if (!opt) return;
+        const res = await fetch(`/integrations/google/sheets/${opt.value}/tabs`, { headers: headers() });
+        const data = await res.json();
+        tabSelect.innerHTML = "";
+        (data.tabs || []).forEach((tab) => {
+          const t = document.createElement("option");
+          t.value = tab;
+          t.textContent = tab;
+          tabSelect.appendChild(t);
+        });
+        if (rangeInput && tabSelect.options.length > 0) {
+          rangeInput.value = tabSelect.options[0].value;
+        }
+        log({ tabs: data });
+      }
+
+      document.getElementById("loadSheetsBtn").onclick = async () => {
+        const res = await fetch("/integrations/google/sheets", { headers: headers() });
+        const data = await res.json();
+        log(data);
+        sheetSelect.innerHTML = "";
+        (data.files || []).forEach((f) => {
+          const opt = document.createElement("option");
+          opt.value = f.id;
+          opt.textContent = `${f.name}`;
+          opt.dataset.name = f.name;
+          sheetSelect.appendChild(opt);
+        });
+        await loadTabsForSelectedSheet();
+      };
+      document.getElementById("loadSavedBtn").onclick = () => loadSavedSheets(false);
+      syncToggleBtn.onclick = async () => {
+        const currentEnabled = syncToggleBtn.textContent === "Disable Sync";
+        const payload = { sync_enabled: !currentEnabled };
+        const res = await fetch("/integrations/google/sync-settings", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          await showModal({
+            title: "Error",
+            message: data.detail || "Failed to update sync setting.",
+            confirmText: "OK",
+            hideCancel: true,
+          });
+          return;
+        }
+        await refreshSyncToggle();
+      };
+
+      sheetSelect.onchange = loadTabsForSelectedSheet;
+      tabSelect.onchange = () => {
+        const tab = tabSelect.value;
+        if (tab && rangeInput) rangeInput.value = tab;
+      };
+
+      document.getElementById("saveSelectedBtn").onclick = async () => {
+        const opt = sheetSelect.options[sheetSelect.selectedIndex];
+        if (!opt) return log("Select a sheet first");
+        const payload = { spreadsheet_id: opt.value, spreadsheet_name: opt.dataset.name || opt.textContent };
+        const res = await fetch("/integrations/google/saved-sheets", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        await showModal({
+          title: "Saved",
+          message: "Sheet saved successfully.",
+          confirmText: "OK",
+          hideCancel: true
+        });
+        log(data);
+        await loadSavedSheets(true);
+      };
+
+      async function previewRead() {
+        const opt = sheetSelect.options[sheetSelect.selectedIndex];
+        if (!opt) return;
+        const effectiveRange = rangeInput ? rangeInput.value.trim() || "Sheet1" : (tabSelect.value || "Sheet1");
+        const range = encodeURIComponent(effectiveRange);
+        const res = await fetch(`/integrations/google/sheets/${opt.value}?range=${range}`, { headers: headers() });
+        const data = await res.json();
+        log({ auto_read_preview: data });
+      }
+
+      const readBtn = document.getElementById("readBtn");
+      if (readBtn) {
+        readBtn.onclick = async () => {
+          const opt = sheetSelect.options[sheetSelect.selectedIndex];
+          if (!opt) return log("Select a sheet first");
+          const effectiveRange = rangeInput ? rangeInput.value.trim() || "Sheet1" : (tabSelect.value || "Sheet1");
+          const range = encodeURIComponent(effectiveRange);
+          const res = await fetch(`/integrations/google/sheets/${opt.value}?range=${range}`, { headers: headers() });
+          const data = await res.json();
+          log(data);
+        };
+      }
+
+      const updateBtn = document.getElementById("updateBtn");
+      if (updateBtn && valuesInput) {
+        updateBtn.onclick = async () => {
+          const opt = sheetSelect.options[sheetSelect.selectedIndex];
+          if (!opt) return log("Select a sheet first");
+          let values;
+          try {
+            values = JSON.parse(valuesInput.value.trim());
+          } catch {
+            return log("Invalid JSON in values field");
+          }
+          const payload = { range: rangeInput ? rangeInput.value.trim() || "Sheet1" : (tabSelect.value || "Sheet1"), values };
+          const res = await fetch(`/integrations/google/sheets/${opt.value}`, {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          log(data);
+        };
+      }
+
+      // initial load
+      (async () => {
+        await refreshSyncToggle();
+        await loadSavedSheets(true);
+        if (sheetSelect.options.length > 0) {
+          await loadTabsForSelectedSheet();
+          await previewRead();
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sheet Details</title>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 24px; background: #f7f8fb; color: #1f2937; }
+      .container { max-width: 900px; margin: 0 auto; }
+      .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+      .nav a { margin-right: 12px; color: #2563eb; text-decoration: none; font-weight: 600; }
+      button { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; cursor: pointer; }
+      .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      ul { margin: 0; padding-left: 18px; }
+      pre { background: #111827; color: #e5e7eb; padding: 10px; border-radius: 8px; }
+      .modal-backdrop { position: fixed; inset: 0; background: rgba(17,24,39,.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
+      .modal { width: min(520px, 92vw); background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 18px 40px rgba(0,0,0,.22); padding: 16px; }
+      .modal h4 { margin: 0 0 8px; }
+      .modal p { margin: 0 0 14px; color: #374151; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>Saved Sheet Details</h2>
+      <div class="nav">
+        <a href="/app/sheets">Back to Dashboard</a>
+      </div>
+      <div class="card">
+        <label>Logged in user</label><br />
+        <input id="userId" value="" readonly style="padding:8px;min-width:320px;" />
+      </div>
+      <div class="card">
+        <div id="sheetMeta">Loading...</div>
+        <div style="margin-top:10px;">
+          <button id="activateBtn" class="primary">Set Active</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Tabs</h3>
+        <ul id="tabs"></ul>
+      </div>
+      <div class="card">
+        <h3>Logs</h3>
+        <pre id="logs">Ready.</pre>
+      </div>
+    </div>
+    <div id="modalBackdrop" class="modal-backdrop">
+      <div class="modal">
+        <h4 id="modalTitle">Confirm</h4>
+        <p id="modalMessage"></p>
+        <div class="modal-actions">
+          <button id="modalCancelBtn">Cancel</button>
+          <button id="modalConfirmBtn" class="primary">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const spreadsheetId = params.get("spreadsheet_id");
+      const userIdEl = document.getElementById("userId");
+      const token = localStorage.getItem("auth_token");
+      const authEmail = localStorage.getItem("auth_email");
+      const authUserId = localStorage.getItem("auth_user_id");
+      if (!token) window.location.href = "/app/login";
+      userIdEl.value = authEmail || authUserId || "Authenticated user";
+      const logs = document.getElementById("logs");
+      const sheetMeta = document.getElementById("sheetMeta");
+      const tabsEl = document.getElementById("tabs");
+      const modalBackdrop = document.getElementById("modalBackdrop");
+      const modalTitle = document.getElementById("modalTitle");
+      const modalMessage = document.getElementById("modalMessage");
+      const modalCancelBtn = document.getElementById("modalCancelBtn");
+      const modalConfirmBtn = document.getElementById("modalConfirmBtn");
+
+      function headers() {
+        return {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`
+        };
+      }
+      function log(obj) {
+        logs.textContent = `${JSON.stringify(obj, null, 2)}\n\n${logs.textContent}`;
+      }
+      function showModal({ title, message, confirmText = "Confirm", cancelText = "Cancel", hideCancel = false }) {
+        return new Promise((resolve) => {
+          modalTitle.textContent = title;
+          modalMessage.textContent = message;
+          modalConfirmBtn.textContent = confirmText;
+          modalCancelBtn.textContent = cancelText;
+          modalCancelBtn.style.display = hideCancel ? "none" : "inline-block";
+          modalBackdrop.style.display = "flex";
+          const close = (result) => {
+            modalBackdrop.style.display = "none";
+            modalConfirmBtn.onclick = null;
+            modalCancelBtn.onclick = null;
+            resolve(result);
+          };
+          modalConfirmBtn.onclick = () => close(true);
+          modalCancelBtn.onclick = () => close(false);
+        });
+      }
+
+      async function loadDetails() {
+        if (!spreadsheetId) {
+          sheetMeta.textContent = "Missing spreadsheet_id";
+          return;
+        }
+        const res = await fetch(`/integrations/google/saved-sheets/${encodeURIComponent(spreadsheetId)}`, { headers: headers() });
+        const data = await res.json();
+        log(data);
+        if (!data.sheet) {
+          sheetMeta.textContent = "Sheet not found.";
+          return;
+        }
+        sheetMeta.innerHTML = `
+          <div><strong>Name:</strong> ${data.sheet.spreadsheet_name}</div>
+          <div><strong>ID:</strong> ${data.sheet.spreadsheet_id}</div>
+          <div><strong>Active:</strong> ${data.sheet.is_active ? "Yes" : "No"}</div>
+        `;
+        tabsEl.innerHTML = "";
+        (data.tabs || []).forEach((t) => {
+          const li = document.createElement("li");
+          li.textContent = t;
+          tabsEl.appendChild(li);
+        });
+      }
+
+      document.getElementById("activateBtn").onclick = async () => {
+        if (!spreadsheetId) return;
+        const ok = await showModal({
+          title: "Make Sheet Active",
+          message: "Are you sure you want to make this sheet active?",
+          confirmText: "Yes, Set Active",
+          cancelText: "Cancel"
+        });
+        if (!ok) return;
+        const res = await fetch(`/integrations/google/saved-sheets/${encodeURIComponent(spreadsheetId)}/activate`, {
+          method: "POST",
+          headers: headers()
+        });
+        const data = await res.json();
+        await showModal({
+          title: "Success",
+          message: "Sheet marked active.",
+          confirmText: "OK",
+          hideCancel: true
+        });
+        log(data);
+        await loadDetails();
+      };
+
+      loadDetails();
+    </script>
+  </body>
+</html>

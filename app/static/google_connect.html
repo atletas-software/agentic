@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect Google Sheets</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; max-width: 860px; }
+      button { padding: 8px 12px; cursor: pointer; }
+      input { padding: 6px; min-width: 340px; margin-top: 6px; }
+      .nav a { margin-right: 12px; }
+      pre { background: #f6f8fa; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h2>Google Integration</h2>
+    <div class="nav">
+      <a href="/app/connect">Connect</a>
+      <a href="/app/sheets">Sheets</a>
+    </div>
+    <p>Step 1: Connect your Google account.</p>
+    <div style="margin-top:10px;">
+      <button id="connectBtn">Connect Google Sheets</button>
+      <button id="logoutBtn">Logout</button>
+    </div>
+    <h3>Log</h3>
+    <pre id="logs">Ready.</pre>
+    <script>
+      const logEl = document.getElementById("logs");
+      const token = localStorage.getItem("auth_token");
+      if (!token) window.location.href = "/app/login";
+
+      function log(msg) {
+        const line = typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
+        logEl.textContent = `${line}\n\n${logEl.textContent}`;
+      }
+
+      document.getElementById("connectBtn").onclick = async () => {
+        const res = await fetch("/integrations/google/connect", {
+          headers: { "Authorization": `Bearer ${localStorage.getItem("auth_token")}` }
+        });
+        const data = await res.json();
+        log(data);
+        if (data.authorization_url) window.location.href = data.authorization_url;
+      };
+      document.getElementById("logoutBtn").onclick = () => {
+        localStorage.removeItem("auth_token");
+        localStorage.removeItem("auth_email");
+        localStorage.removeItem("auth_user_id");
+        window.location.href = "/app/login";
+      };
+    </script>
+  </body>
+</html>
