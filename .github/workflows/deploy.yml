@@ -11,34 +11,49 @@ jobs:
     steps:
 
     # ---------------------------------
-    # 1. CREATE ENV FILE
+    # 1. CREATE .env FILE
     # ---------------------------------
     - name: Create env-backup
       run: |
         cat <<EOF > env-backup
         DATABASE_URL=${{ secrets.DATABASE_URL }}
+        
         GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
         GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
         GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}
+        
         SYNC_POLL_ENABLED=${{ secrets.SYNC_POLL_ENABLED }}
         POLL_TICK_SECONDS=${{ secrets.POLL_TICK_SECONDS }}
         REDIS_URL=${{ secrets.REDIS_URL }}
         SYNC_QUEUE_NAME=${{ secrets.SYNC_QUEUE_NAME }}
+        
         SYNC_QUOTA_BACKOFF_BASE_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_BASE_MINUTES }}
         SYNC_QUOTA_BACKOFF_MAX_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_MAX_MINUTES }}
+        
         DESTINATION_GOOGLE_CREDENTIALS_FILE=${{ secrets.DESTINATION_GOOGLE_CREDENTIALS_FILE }}
         DESTINATION_SPREADSHEET_ID=${{ secrets.DESTINATION_SPREADSHEET_ID }}
         EOF
 
     # ---------------------------------
-    # 2. CREATE credential.json FILE
+    # 2. CREATE credential.json
     # ---------------------------------
     - name: Create credential.json
       run: |
-        printf '%s' "${{ secrets.CREDENTIALS_JSON }}" > credential.json
+        echo '${{ secrets.CREDENTIALS_JSON }}' > credential.json
 
     # ---------------------------------
-    # 4. UPLOAD FILES TO SERVER
+    # 3. DEBUG (IMPORTANT - prevents SCP failures)
+    # ---------------------------------
+    - name: Verify files exist
+      run: |
+        ls -la
+        echo "---- env-backup ----"
+        cat env-backup
+        echo "---- credential.json ----"
+        cat credential.json
+
+    # ---------------------------------
+    # 4. UPLOAD FILES VIA SCP
     # ---------------------------------
     - name: Upload files
       uses: appleboy/scp-action@v0.1.7
@@ -56,7 +71,7 @@ jobs:
     # ---------------------------------
     # 5. DEPLOY ON SERVER
     # ---------------------------------
-    - name: Deploy
+    - name: Deploy via SSH
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SERVER_HOST }}
@@ -68,18 +83,19 @@ jobs:
 
           cd /var/www/html/project/agentic
 
+          echo "🔄 Pull latest code"
           git pull origin main
 
-          echo "🧹 cleaning old files"
+          echo "🧹 Remove old config"
           rm -f .env credential.json
 
-          echo "📦 renaming files"
+          echo "📦 Apply new config"
           mv env-backup .env
-          mv credential-json credential.json
+          mv credential.json credential.json
 
           chmod 600 .env credential.json
 
-          echo "🐳 restart docker"
+          echo "🐳 Restart containers"
           docker compose up -d --build --remove-orphans
 
-          echo "✅ done"
+          echo "✅ Deployment completed successfully"
