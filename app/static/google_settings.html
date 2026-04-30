@@ -51,7 +51,7 @@
           <option value="300">5 minutes</option>
         </select>
         <div class="help">
-          Each user's active sheet is checked using this interval.
+          Your selected sheet is checked using this interval.
         </div>
         <div style="margin-top:12px;">
           <button id="loadBtn">Load</button>
@@ -96,16 +96,11 @@
       const nextDueAtEl = document.getElementById("nextDueAt");
       const lastRunStatusEl = document.getElementById("lastRunStatus");
       const skippedRowsListEl = document.getElementById("skippedRowsList");
-      const token = localStorage.getItem("auth_token");
-      const authEmail = localStorage.getItem("auth_email");
-      const authUserId = localStorage.getItem("auth_user_id");
-      if (!token) window.location.href = "/app/login";
-      userIdEl.value = authEmail || authUserId || "Authenticated user";
+      userIdEl.value = "Authenticated user";
 
       function headers() {
         return {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`
+          "Content-Type": "application/json"
         };
       }
 
@@ -186,7 +181,16 @@
         await loadStatus();
       };
 
-      loadSettings();
+      (async () => {
+        const meRes = await fetch("/auth/me");
+        if (!meRes.ok) {
+          window.location.href = "/app/connect";
+          return;
+        }
+        const me = await meRes.json();
+        userIdEl.value = me.email || me.user_id || "Authenticated user";
+        await loadSettings();
+      })();
     </script>
   </body>
 </html>

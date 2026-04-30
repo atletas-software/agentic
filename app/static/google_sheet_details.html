@@ -59,11 +59,7 @@
       const params = new URLSearchParams(window.location.search);
       const spreadsheetId = params.get("spreadsheet_id");
       const userIdEl = document.getElementById("userId");
-      const token = localStorage.getItem("auth_token");
-      const authEmail = localStorage.getItem("auth_email");
-      const authUserId = localStorage.getItem("auth_user_id");
-      if (!token) window.location.href = "/app/login";
-      userIdEl.value = authEmail || authUserId || "Authenticated user";
+      userIdEl.value = "Authenticated user";
       const logs = document.getElementById("logs");
       const sheetMeta = document.getElementById("sheetMeta");
       const tabsEl = document.getElementById("tabs");
@@ -75,8 +71,7 @@
 
       function headers() {
         return {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`
+          "Content-Type": "application/json"
         };
       }
       function log(obj) {
@@ -150,7 +145,16 @@
         await loadDetails();
       };
 
-      loadDetails();
+      (async () => {
+        const meRes = await fetch("/auth/me");
+        if (!meRes.ok) {
+          window.location.href = "/app/connect";
+          return;
+        }
+        const me = await meRes.json();
+        userIdEl.value = me.email || me.user_id || "Authenticated user";
+        await loadDetails();
+      })();
     </script>
   </body>
 </html>

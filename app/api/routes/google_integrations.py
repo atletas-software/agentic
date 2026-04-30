@@ -10,21 +10,18 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies.auth import get_current_user_id
 from app.models.google_integration_api import SelectSheetRequest, UserSyncSettingsRequest
-from app.models.google_oauth import SheetSyncRun, UserGoogleSheetConnection
+from app.models.google_oauth import SheetSyncRun
 from app.models.google_sheets_api import SheetUpdateRequest
 from app.services.google_integration import (
-    get_saved_sheet,
     get_selected_sheet,
     get_user_sync_settings,
-    list_saved_sheets,
     resolve_polling_interval_seconds,
-    save_sheet,
-    set_active_sheet,
     set_selected_sheet,
     set_user_sync_settings,
 )
 from app.services.google_oauth import build_connect_url, exchange_code_for_tokens
 from app.services.google_sheets import list_spreadsheet_tabs, list_user_sheets, read_sheet, update_sheet
+from app.services.auth import create_user_session
 
 router = APIRouter(prefix="/integrations/google", tags=["google-integrations"])
 ALLOWED_POLLING_INTERVAL_SECONDS = [30, 35, 60, 90, 120, 150, 180, 210, 240, 270, 300]
@@ -32,17 +29,34 @@ ALLOWED_POLLING_INTERVAL_SECONDS = [30, 35, 60, 90, 120, 150, 180, 210, 240, 270
 
 @router.get("/connect")
 async def google_connect(
-    user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
-    url = build_connect_url(user_id=user_id, db=db)
+    url = build_connect_url(db=db)
     return {"authorization_url": url}
 
 
 @router.get("/callback")
 async def google_callback(code: str, state: str, db: Session = Depends(get_db)) -> RedirectResponse:
-    user_id = exchange_code_for_tokens(code=code, state=state, db=db)
-    return RedirectResponse(url=f"/app/success?google_connected=true&user_id={user_id}")
+    user_id, email, _ = exchange_code_for_tokens(code=code, state=state, db=db)
+    session = create_user_session(user_id=int(user_id), db=db)
+    response = RedirectResponse(url="/app/sheets")
+    response.set_cookie(
+        key="session_id",
+        value=session.session_id,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    response.set_cookie(
+        key="session_email",
+        value=email,
+        httponly=False,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return response
 
 
 @router.get("/sheets")
@@ -125,93 +139,6 @@ async def google_set_selected_sheet(
     }
 
 
-@router.get("/saved-sheets")
-async def google_saved_sheets(
-    user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-) -> dict:
-    rows = list_saved_sheets(user_id=user_id, db=db)
-    return {
-        "saved_sheets": [
-            {
-                "spreadsheet_id": r.spreadsheet_id,
-                "spreadsheet_name": r.spreadsheet_name,
-                "is_active": r.is_active,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ]
-    }
-
-
-@router.post("/saved-sheets")
-async def google_save_sheet(
-    request: SelectSheetRequest,
-    user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-) -> dict:
-    row = save_sheet(
-        user_id=user_id,
-        spreadsheet_id=request.spreadsheet_id,
-        spreadsheet_name=request.spreadsheet_name,
-        db=db,
-    )
-    return {
-        "success": True,
-        "sheet": {
-            "spreadsheet_id": row.spreadsheet_id,
-            "spreadsheet_name": row.spreadsheet_name,
-            "is_active": row.is_active,
-        },
-    }
-
-
-@router.get("/saved-sheets/{spreadsheet_id}")
-async def google_saved_sheet_details(
-    spreadsheet_id: str,
-    user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-) -> dict:
-    row = get_saved_sheet(user_id=user_id, spreadsheet_id=spreadsheet_id, db=db)
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved sheet not found.")
-    return {
-        "sheet": {
-            "spreadsheet_id": row.spreadsheet_id,
-            "spreadsheet_name": row.spreadsheet_name,
-            "is_active": row.is_active,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        },
-        "tabs": list_spreadsheet_tabs(user_id=user_id, spreadsheet_id=spreadsheet_id, db=db),
-    }
-
-
-@router.post("/saved-sheets/{spreadsheet_id}/activate")
-async def google_activate_saved_sheet(
-    spreadsheet_id: str,
-    user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
-) -> dict:
-    row = set_active_sheet(user_id=user_id, spreadsheet_id=spreadsheet_id, db=db)
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved sheet not found.")
-    set_selected_sheet(
-        user_id=user_id,
-        spreadsheet_id=row.spreadsheet_id,
-        spreadsheet_name=row.spreadsheet_name,
-        db=db,
-    )
-    return {
-        "success": True,
-        "active_sheet": {
-            "spreadsheet_id": row.spreadsheet_id,
-            "spreadsheet_name": row.spreadsheet_name,
-            "is_active": row.is_active,
-        },
-    }
-
-
 @router.get("/sync-settings")
 async def google_get_sync_settings(
     user_id: str = Depends(get_current_user_id),
@@ -233,19 +160,11 @@ async def google_set_sync_settings(
     db: Session = Depends(get_db),
 ) -> dict:
     if request.sync_enabled is True:
-        has_active_sheet = (
-            db.query(UserGoogleSheetConnection.id)
-            .filter(
-                UserGoogleSheetConnection.user_id == user_id,
-                UserGoogleSheetConnection.is_active.is_(True),
-            )
-            .first()
-            is not None
-        )
-        if not has_active_sheet:
+        selected = get_selected_sheet(user_id=user_id, db=db)
+        if selected is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Set an active sheet before enabling sync.",
+                detail="Select a sheet before enabling sync.",
             )
     seconds = request.polling_interval_seconds
     if seconds is None and request.polling_interval_minutes is not None:

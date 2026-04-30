@@ -13,7 +13,7 @@ from app.models.google_oauth import (
     SheetSyncEvent,
     SheetSyncRowState,
     SheetSyncRun,
-    UserGoogleSheetConnection,
+    UserGoogleSheetSelection,
     UserSyncSetting,
 )
 from app.models.auth import UserAccount
@@ -364,26 +364,16 @@ def _ensure_destination_headers(
 
 
 def run_sync_once_for_active_sheets(db: Session) -> dict[str, int]:
-    active_user_rows = (
-        db.query(UserGoogleSheetConnection.user_id)
-        .filter(UserGoogleSheetConnection.is_active.is_(True))
-        .distinct()
-        .all()
-    )
-    return run_sync_once_for_users(db=db, user_ids=[row[0] for row in active_user_rows])
+    selected_user_rows = db.query(UserGoogleSheetSelection.user_id).distinct().all()
+    return run_sync_once_for_users(db=db, user_ids=[row[0] for row in selected_user_rows])
 
 
 def get_due_user_ids_for_sync(db: Session, now: datetime | None = None) -> list[str]:
     current = now or datetime.now(UTC)
-    active_user_rows = (
-        db.query(UserGoogleSheetConnection.user_id)
-        .filter(UserGoogleSheetConnection.is_active.is_(True))
-        .distinct()
-        .all()
-    )
-    active_user_ids = [row[0] for row in active_user_rows]
+    selected_user_rows = db.query(UserGoogleSheetSelection.user_id).distinct().all()
+    selected_user_ids = [row[0] for row in selected_user_rows]
     due_user_ids: list[str] = []
-    for user_id in active_user_ids:
+    for user_id in selected_user_ids:
         try:
             user_id_int = int(user_id)
         except ValueError:
@@ -427,29 +417,25 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
         info("sync_skipped_destination_not_configured")
         return {"runs": 0, "rows": 0}
 
-    active_sheets = (
-        db.query(UserGoogleSheetConnection)
-        .filter(UserGoogleSheetConnection.is_active.is_(True), UserGoogleSheetConnection.user_id.in_(user_ids))
-        .all()
-    )
+    selected_sheets = db.query(UserGoogleSheetSelection).filter(UserGoogleSheetSelection.user_id.in_(user_ids)).all()
     total_rows_processed = 0
     run_count = 0
 
-    for active in active_sheets:
+    for selected in selected_sheets:
         try:
-            user_id_int = int(active.user_id)
+            user_id_int = int(selected.user_id)
         except ValueError:
-            info("sync_user_skipped_invalid_user_id", user_id=active.user_id)
+            info("sync_user_skipped_invalid_user_id", user_id=selected.user_id)
             continue
         user_account = db.query(UserAccount).filter(UserAccount.id == user_id_int, UserAccount.is_active.is_(True)).one_or_none()
         if user_account is None:
-            info("sync_user_skipped_not_authenticated", user_id=active.user_id)
+            info("sync_user_skipped_not_authenticated", user_id=selected.user_id)
             continue
-        setting = db.query(UserSyncSetting).filter(UserSyncSetting.user_id == active.user_id).one_or_none()
+        setting = db.query(UserSyncSetting).filter(UserSyncSetting.user_id == selected.user_id).one_or_none()
         if setting is None or not setting.sync_enabled:
-            info("sync_user_skipped_disabled", user_id=active.user_id)
+            info("sync_user_skipped_disabled", user_id=selected.user_id)
             continue
-        target_sheet_name = destination.user_sheet_name(active.user_id)
+        target_sheet_name = destination.user_sheet_name(selected.user_id)
         headers, dest_rows = destination.load_headers_and_rows(
             sheet_name=target_sheet_name,
             ensure_sheet=True,
@@ -467,7 +453,7 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
         if missing_destination_headers:
             info(
                 "sync_destination_headers_missing",
-                user_id=active.user_id,
+                user_id=selected.user_id,
                 target_sheet_name=target_sheet_name,
                 required=REQUIRED_DESTINATION_SYNC_HEADERS,
                 missing=missing_destination_headers,
@@ -482,8 +468,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                 destination_index[row[source_row_key_col]] = i
 
         run = SheetSyncRun(
-            user_id=active.user_id,
-            spreadsheet_id=active.spreadsheet_id,
+            user_id=selected.user_id,
+            spreadsheet_id=selected.spreadsheet_id,
             tab_name="",
             status="RUNNING",
         )
@@ -494,8 +480,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
 
         try:
             read = read_sheet(
-                user_id=active.user_id,
-                spreadsheet_id=active.spreadsheet_id,
+                user_id=selected.user_id,
+                spreadsheet_id=selected.spreadsheet_id,
                 range_name="A1:ZZ",
                 db=db,
             )
@@ -518,8 +504,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                 for idx in range(2, len(rows) + 2):
                     try:
                         _mark_source_row_failed(
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             source_headers=source_headers,
                             row_number=idx,
@@ -530,10 +516,10 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                 _event(
                     db=db,
                     run_id=run.id,
-                    user_id=active.user_id,
-                    spreadsheet_id=active.spreadsheet_id,
+                    user_id=selected.user_id,
+                    spreadsheet_id=selected.spreadsheet_id,
                     tab_name=tab_name,
-                    source_row_key=f"{active.spreadsheet_id}:{tab_name}:*",
+                    source_row_key=f"{selected.spreadsheet_id}:{tab_name}:*",
                     row_number=0,
                     action="VALIDATE",
                     status="FAILED",
@@ -544,7 +530,7 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                 continue
 
             for idx, row in enumerate(rows, start=2):
-                source_key = _source_row_key(active.spreadsheet_id, tab_name, idx)
+                source_key = _source_row_key(selected.spreadsheet_id, tab_name, idx)
                 try:
                     source_values = _normalize_row(source_headers, row)
                     source_name_col = resolved_headers.get("First and Last name", "First and Last name")
@@ -576,8 +562,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         _log_skip_once(
                             db=db,
                             run_id=run.id,
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             source_row_key=source_key,
                             row_number=idx,
@@ -602,8 +588,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                     state = (
                         db.query(SheetSyncRowState)
                         .filter(
-                            SheetSyncRowState.user_id == active.user_id,
-                            SheetSyncRowState.spreadsheet_id == active.spreadsheet_id,
+                            SheetSyncRowState.user_id == selected.user_id,
+                            SheetSyncRowState.spreadsheet_id == selected.spreadsheet_id,
                             SheetSyncRowState.tab_name == tab_name,
                             SheetSyncRowState.row_number == idx,
                         )
@@ -615,8 +601,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         _event(
                             db=db,
                             run_id=run.id,
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             source_row_key=source_key,
                             row_number=idx,
@@ -625,8 +611,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                             message="No change",
                         )
                         _mark_source_row_status(
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             source_headers=source_headers,
                             row_number=idx,
@@ -653,7 +639,7 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         },
                         source_row_key=source_key,
                         row_hash=digest,
-                        spreadsheet_id=active.spreadsheet_id,
+                        spreadsheet_id=selected.spreadsheet_id,
                         tab_name=tab_name,
                         row_number=idx,
                         action=action,
@@ -671,8 +657,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
 
                     if state is None:
                         state = SheetSyncRowState(
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             row_number=idx,
                             source_row_key=source_key,
@@ -689,13 +675,13 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         state.last_synced_at = datetime.now(UTC)
                         state.last_error = None
                         state.attempt_count += 1
-                    _clear_skip_logs_for_row(db=db, user_id=active.user_id, source_row_key=source_key)
+                    _clear_skip_logs_for_row(db=db, user_id=selected.user_id, source_row_key=source_key)
 
                     _event(
                         db=db,
                         run_id=run.id,
-                        user_id=active.user_id,
-                        spreadsheet_id=active.spreadsheet_id,
+                        user_id=selected.user_id,
+                        spreadsheet_id=selected.spreadsheet_id,
                         tab_name=tab_name,
                         source_row_key=source_key,
                         row_number=idx,
@@ -706,8 +692,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         destination_response=resp,
                     )
                     _mark_source_row_status(
-                        user_id=active.user_id,
-                        spreadsheet_id=active.spreadsheet_id,
+                        user_id=selected.user_id,
+                        spreadsheet_id=selected.spreadsheet_id,
                         tab_name=tab_name,
                         source_headers=source_headers,
                         row_number=idx,
@@ -720,8 +706,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                     _event(
                         db=db,
                         run_id=run.id,
-                        user_id=active.user_id,
-                        spreadsheet_id=active.spreadsheet_id,
+                        user_id=selected.user_id,
+                        spreadsheet_id=selected.spreadsheet_id,
                         tab_name=tab_name,
                         source_row_key=source_key,
                         row_number=idx,
@@ -731,8 +717,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                     )
                     try:
                         _mark_source_row_failed(
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             source_headers=source_headers,
                             row_number=idx,
@@ -751,8 +737,8 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                 for idx in range(2, len(rows) + 2):
                     try:
                         _mark_source_row_failed(
-                            user_id=active.user_id,
-                            spreadsheet_id=active.spreadsheet_id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
                             tab_name=tab_name,
                             source_headers=source_headers,
                             row_number=idx,
@@ -763,10 +749,10 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
             _event(
                 db=db,
                 run_id=run.id,
-                user_id=active.user_id,
-                spreadsheet_id=active.spreadsheet_id,
+                user_id=selected.user_id,
+                spreadsheet_id=selected.spreadsheet_id,
                 tab_name=run.tab_name or "unknown",
-                source_row_key=f"{active.spreadsheet_id}:{run.tab_name or 'unknown'}:*",
+                source_row_key=f"{selected.spreadsheet_id}:{run.tab_name or 'unknown'}:*",
                 row_number=0,
                 action="RUN_SYNC",
                 status="FAILED",

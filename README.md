@@ -14,7 +14,7 @@ It reuses your existing append API endpoint as the destination adapter while kee
 
 Google OAuth + Sheets integration is included with token storage in the application database.
 Polling-based source-to-destination sync is included for active user sheets.
-Email/password authentication with JWT bearer sessions is included.
+Authentication uses Google OAuth with database-backed browser sessions.
 
 ## Run
 
@@ -91,14 +91,11 @@ Open backend UI pages:
 
 ## Environment variables
 
-- `DESTINATION_API_URL` (default: `https://sheet.athlete-focus.com/default`)
-- `DESTINATION_API_TIMEOUT_SECONDS` (default: `10`)
 - `DATABASE_URL` (Postgres recommended in production)
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI`
-- `JWT_SECRET_KEY`
-- `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default: `60`)
+- `SESSION_TTL_DAYS` (default: `30`)
 - `SYNC_POLL_ENABLED` (default: `true`)
 - `SYNC_POLL_TICK_SECONDS` (default: `30`, scheduler heartbeat)
 - `REDIS_URL` (default: `redis://localhost:6379/0`)
@@ -107,7 +104,6 @@ Open backend UI pages:
 - `SYNC_QUOTA_BACKOFF_MAX_MINUTES` (default: `60`)
 - `DESTINATION_GOOGLE_CREDENTIALS_FILE` (default: `credentials.json`)
 - `DESTINATION_SPREADSHEET_ID` (required for polling sync)
-- `DESTINATION_SHEET_NAME` (default: `Sheet1`)
 - `DESTINATION_USER_SHEET_PREFIX` (default: `user`, destination tab name becomes `<prefix>_<user_id_sanitized>`)
 - `SOURCE_FIELD_MAP` (optional JSON map for raw source-row headers -> normalized record fields)
 - `SOURCE_SHEET_ID` (optional; if missing, status updates run in mock mode)
@@ -132,31 +128,26 @@ Open backend UI pages:
 - `POST /workflow/run?test_mode=true`
 - `GET /workflow/example_event`
 - `GET /integrations/google/connect` (returns OAuth URL)
-- `GET /integrations/google/callback` (exchanges code, stores user tokens)
+- `GET /integrations/google/callback` (exchanges code, stores user tokens, creates app session)
 - `GET /integrations/google/sheets` (lists spreadsheet files)
 - `GET /integrations/google/sheets/{spreadsheet_id}` (reads range, default `Sheet1`)
 - `GET /integrations/google/sheets/{spreadsheet_id}/tabs` (lists tab names inside selected spreadsheet)
 - `POST /integrations/google/sheets/{spreadsheet_id}` (updates range values)
 - `GET /integrations/google/selected-sheet` (get user's chosen sheet)
 - `POST /integrations/google/selected-sheet` (save user's chosen sheet)
-- `GET /integrations/google/saved-sheets` (list all saved sheets for user)
-- `POST /integrations/google/saved-sheets` (save one sheet for user)
-- `GET /integrations/google/saved-sheets/{spreadsheet_id}` (sheet details + tabs)
-- `POST /integrations/google/saved-sheets/{spreadsheet_id}/activate` (set active sheet)
 - `GET /integrations/google/sync-settings` (per-user polling settings)
 - `POST /integrations/google/sync-settings` (update per-user polling settings in seconds presets)
 - `GET /integrations/google/sync-status` (last run, next due, last error for current user)
-- `POST /auth/register`
-- `POST /auth/login`
 - `GET /auth/me`
+- `POST /auth/logout`
 - `POST /sync/run-once` (manual polling sync trigger)
 - `GET /sync/runs` (latest sync runs for current user)
 - `GET /sync/runs/{run_id}/events` (row-level sync execution logs)
 - `GET /sync/states` (latest row snapshot states/hash history)
 - `GET /app/connect` (backend hosted connect page)
 - `GET /app/sheets` (backend hosted sheets browser page)
-- `GET /app/login` (login page)
-- `GET /app/register` (register page)
+- `GET /app/login` (redirects to connect page)
+- `GET /app/register` (redirects to connect page)
 
 OAuth scopes used:
 - `https://www.googleapis.com/auth/spreadsheets`

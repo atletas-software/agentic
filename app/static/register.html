@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Register</title>
+    <title>Connect Google</title>
     <style>
       body { font-family: Inter, Arial, sans-serif; margin: 24px; background: #f7f8fb; color: #1f2937; }
       .card { max-width: 420px; margin: 40px auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
@@ -15,35 +15,15 @@
   </head>
   <body>
     <div class="card">
-      <h2>Create account</h2>
-      <label>Email</label>
-      <input id="email" type="email" placeholder="you@example.com" />
-      <label>Password</label>
-      <input id="password" type="password" placeholder="Minimum 8 characters" />
-      <button id="registerBtn">Register</button>
-      <div id="error" class="error"></div>
-      <div class="link">Already have an account? <a href="/app/login">Login</a></div>
+      <h2>Connect Google</h2>
+      <p>Account signup has been removed.</p>
+      <button id="connectBtn">Continue with Google</button>
     </div>
     <script>
-      document.getElementById("registerBtn").onclick = async () => {
-        const email = document.getElementById("email").value.trim();
-        const password = document.getElementById("password").value;
-        const error = document.getElementById("error");
-        error.textContent = "";
-        const res = await fetch("/auth/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        });
+      document.getElementById("connectBtn").onclick = async () => {
+        const res = await fetch("/integrations/google/connect");
         const data = await res.json();
-        if (!res.ok) {
-          error.textContent = data.detail || "Registration failed.";
-          return;
-        }
-        localStorage.setItem("auth_token", data.access_token);
-        localStorage.setItem("auth_email", data.email);
-        localStorage.setItem("auth_user_id", data.user_id);
-        window.location.href = "/app/connect";
+        if (data.authorization_url) window.location.href = data.authorization_url;
       };
     </script>
   </body>

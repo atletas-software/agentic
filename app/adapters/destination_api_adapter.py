@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import os
 from typing import Any
 
 import httpx
@@ -13,10 +11,10 @@ from app.models.contracts import CanonicalEvent
 class DestinationApiAdapter:
     def __init__(self) -> None:
         ensure_env_loaded()
-        self._base_url = os.getenv("DESTINATION_API_URL", "https://sheet.athlete-focus.com/default")
-        self._timeout_s = float(os.getenv("DESTINATION_API_TIMEOUT_SECONDS", "10"))
-        self._default_user_id = os.getenv("DESTINATION_DEFAULT_USER_ID", "sheet-trigger")
-        self._default_user_email = os.getenv("DESTINATION_DEFAULT_USER_EMAIL", "sheet-trigger@athlete-focus.local")
+        self._base_url = "https://sheet.athlete-focus.com/default"
+        self._timeout_s = 10.0
+        self._default_user_id = "sheet-trigger"
+        self._default_user_email = "sheet-trigger@athlete-focus.local"
         info(
             "destination_adapter_config",
             destination_api_url=self._base_url,

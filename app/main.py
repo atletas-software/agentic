@@ -43,6 +43,18 @@ def _ensure_sync_enabled_column() -> None:
 
 _ensure_sync_enabled_column()
 
+
+def _ensure_google_oauth_state_code_verifier_column() -> None:
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        columns = {col["name"] for col in inspector.get_columns("google_oauth_states")}
+        if "code_verifier" in columns:
+            return
+        connection.execute(text("ALTER TABLE google_oauth_states ADD COLUMN code_verifier TEXT"))
+
+
+_ensure_google_oauth_state_code_verifier_column()
+
 app = FastAPI(title="Sheet MCP Workflow", version="0.1.0")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 sync_scheduler = SyncScheduler()

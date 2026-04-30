@@ -1,38 +1,28 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies.auth import get_current_user_context
-from app.models.auth import UserAccount
-from app.models.auth_api import LoginRequest, RegisterRequest, TokenResponse
-from app.services.auth import authenticate_user, create_access_token, create_user
+from app.services.auth import deactivate_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-@router.post("/register", response_model=TokenResponse)
-async def register(request: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    existing = db.query(UserAccount).filter(UserAccount.email == request.email.lower()).one_or_none()
-    if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already exists.")
-    user = create_user(email=request.email, password=request.password, db=db)
-    user_id = str(user.id)
-    token = create_access_token(user_id=user_id, email=user.email)
-    return TokenResponse(access_token=token, user_id=user_id, email=user.email)
-
-
-@router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    user = authenticate_user(email=request.email, password=request.password, db=db)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
-    user_id = str(user.id)
-    token = create_access_token(user_id=user_id, email=user.email)
-    return TokenResponse(access_token=token, user_id=user_id, email=user.email)
 
 
 @router.get("/me")
 async def me(context: dict = Depends(get_current_user_context)) -> dict:
     return {"user_id": context["user_id"], "email": context["email"]}
+
+
+@router.post("/logout")
+async def logout(
+    response: Response,
+    session_id: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    if session_id:
+        deactivate_session(session_id=session_id, db=db)
+    response.delete_cookie("session_id")
+    response.delete_cookie("session_email")
+    return {"success": True}

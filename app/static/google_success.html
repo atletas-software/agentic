@@ -14,10 +14,17 @@
     <p id="msg">Connection successful.</p>
     <a href="/app/sheets">Continue to Sheets</a>
     <script>
-      const params = new URLSearchParams(window.location.search);
-      const userId = params.get("user_id");
-      if (!localStorage.getItem("auth_token")) window.location.href = "/app/login";
-      if (userId) document.getElementById("msg").textContent = `Connection successful for user: ${userId}`;
+      (async () => {
+        const res = await fetch("/auth/me");
+        if (!res.ok) {
+          window.location.href = "/app/connect";
+          return;
+        }
+        const me = await res.json();
+        if (me.email) {
+          document.getElementById("msg").textContent = `Connection successful for: ${me.email}`;
+        }
+      })();
     </script>
   </body>
 </html>

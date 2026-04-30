@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter()
 
@@ -13,12 +13,12 @@ def _read_static_page(filename: str) -> str:
 
 @router.get("/", response_class=HTMLResponse)
 async def root_ui() -> str:
-    return _read_static_page("login.html")
+    return _read_static_page("google_connect.html")
 
 
 @router.get("/app", response_class=HTMLResponse)
 async def app_ui() -> str:
-    return _read_static_page("login.html")
+    return _read_static_page("google_connect.html")
 
 
 @router.get("/app/sheets", response_class=HTMLResponse)
@@ -27,8 +27,8 @@ async def app_sheets_ui() -> str:
 
 
 @router.get("/app/sheets/details", response_class=HTMLResponse)
-async def app_sheets_details_ui() -> str:
-    return _read_static_page("google_sheet_details.html")
+async def app_sheets_details_ui() -> RedirectResponse:
+    return RedirectResponse(url="/app/sheets")
 
 
 @router.get("/app/connect", response_class=HTMLResponse)
@@ -47,10 +47,10 @@ async def app_settings_ui() -> str:
 
 
 @router.get("/app/login", response_class=HTMLResponse)
-async def app_login_ui() -> str:
-    return _read_static_page("login.html")
+async def app_login_ui() -> RedirectResponse:
+    return RedirectResponse(url="/app/connect")
 
 
 @router.get("/app/register", response_class=HTMLResponse)
-async def app_register_ui() -> str:
-    return _read_static_page("register.html")
+async def app_register_ui() -> RedirectResponse:
+    return RedirectResponse(url="/app/connect")

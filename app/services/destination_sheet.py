@@ -14,7 +14,6 @@ class DestinationSheetService:
     def __init__(self) -> None:
         credentials_file = os.getenv("DESTINATION_GOOGLE_CREDENTIALS_FILE", "credentials.json")
         self._spreadsheet_id = os.getenv("DESTINATION_SPREADSHEET_ID", "")
-        self._sheet_name = os.getenv("DESTINATION_SHEET_NAME", "Sheet1")
         self._user_sheet_prefix = os.getenv("DESTINATION_USER_SHEET_PREFIX", "user")
         self._enabled = bool(self._spreadsheet_id)
         if self._enabled:
@@ -28,7 +27,6 @@ class DestinationSheetService:
         info(
             "destination_sheet_service_config",
             enabled=self._enabled,
-            destination_sheet_name=self._sheet_name,
             spreadsheet_id_set=bool(self._spreadsheet_id),
             destination_user_sheet_prefix=self._user_sheet_prefix,
         )
@@ -66,19 +64,18 @@ class DestinationSheetService:
     def load_headers_and_rows(
         self,
         *,
-        sheet_name: str | None = None,
+        sheet_name: str,
         ensure_sheet: bool = False,
         initialize_headers: list[str] | None = None,
     ) -> tuple[list[str], list[list[str]]]:
         if not self.is_enabled():
             return [], []
-        target_sheet = sheet_name or self._sheet_name
         if ensure_sheet:
-            self.ensure_sheet_exists(target_sheet)
+            self.ensure_sheet_exists(sheet_name)
         resp = (
             self._service.spreadsheets()
             .values()
-            .get(spreadsheetId=self._spreadsheet_id, range=f"{target_sheet}!A1:ZZ")
+            .get(spreadsheetId=self._spreadsheet_id, range=f"{sheet_name}!A1:ZZ")
             .execute()
         )
         values = resp.get("values", [])
@@ -86,7 +83,7 @@ class DestinationSheetService:
             if initialize_headers:
                 self._service.spreadsheets().values().update(
                     spreadsheetId=self._spreadsheet_id,
-                    range=f"{target_sheet}!A1",
+                    range=f"{sheet_name}!A1",
                     valueInputOption="USER_ENTERED",
                     body={"values": [initialize_headers]},
                 ).execute()
@@ -94,16 +91,15 @@ class DestinationSheetService:
             return [], []
         return [str(v) for v in values[0]], values[1:]
 
-    def append_row(self, row: list[str], *, sheet_name: str | None = None) -> dict[str, Any]:
+    def append_row(self, row: list[str], *, sheet_name: str) -> dict[str, Any]:
         if not self.is_enabled():
             return {"mode": "disabled"}
-        target_sheet = sheet_name or self._sheet_name
         resp = (
             self._service.spreadsheets()
             .values()
             .append(
                 spreadsheetId=self._spreadsheet_id,
-                range=f"{target_sheet}!A1",
+                range=f"{sheet_name}!A1",
                 valueInputOption="USER_ENTERED",
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]},
@@ -112,16 +108,15 @@ class DestinationSheetService:
         )
         return resp
 
-    def update_row(self, row_number: int, row: list[str], *, sheet_name: str | None = None) -> dict[str, Any]:
+    def update_row(self, row_number: int, row: list[str], *, sheet_name: str) -> dict[str, Any]:
         if not self.is_enabled():
             return {"mode": "disabled"}
-        target_sheet = sheet_name or self._sheet_name
         resp = (
             self._service.spreadsheets()
             .values()
             .update(
                 spreadsheetId=self._spreadsheet_id,
-                range=f"{target_sheet}!A{row_number}",
+                range=f"{sheet_name}!A{row_number}",
                 valueInputOption="USER_ENTERED",
                 body={"values": [row]},
             )
@@ -129,16 +124,15 @@ class DestinationSheetService:
         )
         return resp
 
-    def overwrite_values(self, values: list[list[str]], *, sheet_name: str | None = None) -> dict[str, Any]:
+    def overwrite_values(self, values: list[list[str]], *, sheet_name: str) -> dict[str, Any]:
         if not self.is_enabled():
             return {"mode": "disabled"}
-        target_sheet = sheet_name or self._sheet_name
         resp = (
             self._service.spreadsheets()
             .values()
             .update(
                 spreadsheetId=self._spreadsheet_id,
-                range=f"{target_sheet}!A1",
+                range=f"{sheet_name}!A1",
                 valueInputOption="USER_ENTERED",
                 body={"values": values},
             )

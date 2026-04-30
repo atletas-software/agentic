@@ -1,28 +1,41 @@
 from __future__ import annotations
 
-from fastapi import Depends, Header, HTTPException, status
+from datetime import UTC, datetime
 
-from app.services.auth import decode_access_token
+from fastapi import Cookie, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.models.auth import AppSession, UserAccount
 
 
-def get_current_user_context(authorization: str | None = Header(default=None)) -> dict[str, str]:
-    if not authorization:
+def get_current_user_context(
+    session_id: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    if not session_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header.",
+            detail="Missing session.",
         )
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token format.")
-    try:
-        payload = decode_access_token(token)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token.") from exc
-    user_id = str(payload.get("sub", "")).strip()
-    email = str(payload.get("email", "")).strip()
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing subject.")
-    return {"user_id": user_id, "email": email}
+    now = datetime.now(UTC)
+    session = (
+        db.query(AppSession)
+        .filter(
+            AppSession.session_id == session_id,
+            AppSession.is_active.is_(True),
+            AppSession.expires_at > now,
+        )
+        .one_or_none()
+    )
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session.")
+    user = db.get(UserAccount, session.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user session.")
+    session.last_seen_at = now
+    db.commit()
+    return {"user_id": str(user.id), "email": user.email}
 
 
 def get_current_user_id(context: dict[str, str] = Depends(get_current_user_context)) -> str:

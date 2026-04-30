@@ -3,89 +3,182 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Google Sheets Browser</title>
+    <title>Google Sheets Dashboard</title>
     <style>
-      body { font-family: Inter, Arial, sans-serif; margin: 24px; background: #f7f8fb; color: #1f2937; }
-      .container { max-width: 1100px; margin: 0 auto; }
-      .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      .nav a { margin-right: 12px; color: #2563eb; text-decoration: none; font-weight: 600; }
-      button { padding: 8px 12px; margin-right: 8px; cursor: pointer; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; }
-      button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-      input, select, textarea { padding: 8px; width: 100%; margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; }
-      textarea { min-height: 120px; }
-      .saved-item { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-      .active-pill { font-size: 12px; color: #065f46; background: #d1fae5; padding: 2px 8px; border-radius: 999px; margin-left: 8px; }
-      pre { background: #111827; color: #e5e7eb; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 220px; overflow: auto; }
-      .actions-row { margin-top: 10px; }
-      .modal-backdrop { position: fixed; inset: 0; background: rgba(17,24,39,.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
-      .modal { width: min(520px, 92vw); background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; box-shadow: 0 18px 40px rgba(0,0,0,.22); padding: 16px; }
+      :root {
+        --bg: #eef2ff;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --text: #1f2937;
+        --muted: #64748b;
+        --primary: #2563eb;
+        --primary-strong: #1d4ed8;
+        --border: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: Inter, Arial, sans-serif;
+        margin: 0;
+        background: radial-gradient(circle at top left, #dbeafe 0%, var(--bg) 45%, #f1f5f9 100%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      .container { max-width: 1080px; margin: 0 auto; padding: 24px; }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      h2 { margin: 0; font-size: 32px; line-height: 1.2; }
+      .subtle { color: var(--muted); font-size: 14px; margin-top: 6px; }
+      .nav a {
+        color: var(--primary);
+        text-decoration: none;
+        font-weight: 600;
+        background: #eff6ff;
+        border: 1px solid #dbeafe;
+        padding: 8px 12px;
+        border-radius: 10px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 22px;
+        margin-bottom: 18px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+      }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      .section-title { margin: 0 0 14px; font-size: 24px; }
+      .label { font-size: 13px; color: var(--muted); margin: 8px 0 6px; display: inline-block; }
+      button {
+        padding: 10px 14px;
+        cursor: pointer;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        background: #fff;
+        font-weight: 600;
+        transition: all .12s ease;
+      }
+      button:hover:not(:disabled) { border-color: #94a3b8; }
+      button.primary {
+        background: linear-gradient(180deg, var(--primary), var(--primary-strong));
+        color: #fff;
+        border-color: var(--primary);
+      }
+      button:disabled {
+        opacity: .7;
+        cursor: not-allowed;
+      }
+      input, select {
+        padding: 10px 12px;
+        width: 100%;
+        margin-top: 6px;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        box-sizing: border-box;
+        background: #fff;
+      }
+      .selected-item {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px;
+        background: var(--surface-soft);
+        margin-top: 8px;
+      }
+      .selected-name { font-weight: 700; margin-bottom: 4px; }
+      .selected-id { color: var(--muted); font-size: 13px; word-break: break-all; }
+      .selected-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--primary);
+        text-decoration: none;
+      }
+      .selected-link:hover { text-decoration: underline; }
+      .actions-row { margin: 14px 0 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .sync-status { font-size: 13px; color: var(--muted); margin-left: 2px; }
+      .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
+      .modal { width: min(520px, 92vw); background: #fff; border-radius: 14px; border: 1px solid var(--border); box-shadow: 0 22px 48px rgba(0,0,0,.2); padding: 16px; }
       .modal h4 { margin: 0 0 8px; }
-      .modal p { margin: 0 0 14px; color: #374151; }
+      .modal p { margin: 0 0 14px; color: #334155; line-height: 1.45; }
       .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .toast-stack {
+        position: fixed;
+        top: 18px;
+        right: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 10000;
+      }
+      .toast {
+        min-width: 260px;
+        max-width: 380px;
+        background: #0f172a;
+        color: #fff;
+        border-radius: 10px;
+        padding: 12px 14px;
+        box-shadow: 0 12px 24px rgba(2, 6, 23, 0.25);
+        font-size: 14px;
+        line-height: 1.4;
+        border-left: 4px solid #2563eb;
+      }
+      .toast.error { border-left-color: #ef4444; }
+      .toast.success { border-left-color: #10b981; }
+      @media (max-width: 900px) {
+        .grid { grid-template-columns: 1fr; }
+        .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+      }
     </style>
   </head>
   <body>
     <div class="container">
-      <h2>Google Sheets Dashboard</h2>
-      <div class="nav">
-        <a href="/app/connect">Connect</a>
-        <a href="/app/sheets">Dashboard</a>
-        <a href="/app/settings" title="Sync Settings">⚙ Settings</a>
+      <div class="topbar">
+        <div>
+          <h2>Google Sheets Dashboard</h2>
+          <div class="subtle">Select one sheet and keep it synced automatically.</div>
+        </div>
+        <div class="nav">
+          <a href="/app/settings" title="Sync Settings">Settings</a>
+        </div>
       </div>
 
       <div class="card">
-        <label>Logged in user</label>
+        <span class="label">Logged in user</span>
         <input id="userId" value="" readonly />
         <div class="actions-row">
           <button id="syncToggleBtn" class="primary">Enable Sync</button>
-          <span id="syncToggleStatus" style="font-size:13px;color:#4b5563;"></span>
+          <span id="syncToggleStatus" class="sync-status"></span>
         </div>
       </div>
 
       <div class="grid">
         <div class="card">
-          <h3>Available Google Sheets</h3>
+          <h3 class="section-title">Available Google Sheets</h3>
           <div class="actions-row">
             <button id="loadSheetsBtn">Load Sheets</button>
           </div>
-          <label>Sheets</label>
+          <span class="label">Sheets</span>
           <select id="sheetSelect"></select>
-          <div class="actions-row">
-            <button id="saveSelectedBtn" class="primary">Save Sheet</button>
-          </div>
-          <label style="margin-top:10px;">Tabs in selected sheet</label>
+          <span class="label" style="margin-top:10px;">Tabs in selected sheet</span>
           <select id="tabSelect"></select>
+          <div class="actions-row">
+            <button id="selectSheetBtn" class="primary">Select Sheet</button>
+          </div>
         </div>
 
         <div class="card">
-          <h3>Saved Sheets</h3>
-          <div class="actions-row">
-            <button id="loadSavedBtn">Refresh Saved List</button>
-          </div>
-          <div id="savedSheetsList"></div>
+          <h3 class="section-title">Selected Sheet</h3>
+          <div id="selectedSheetBox" class="selected-item">No sheet selected.</div>
         </div>
       </div>
-
-      <!-- <div class="card">
-        <h3>Quick Read / Update</h3>
-        <label>Range</label>
-        <input id="rangeInput" value="Sheet1" />
-        <div class="actions-row">
-          <button id="readBtn">Read</button>
-        </div>
-        <label style="margin-top:10px;">Update Values (JSON 2D array)</label>
-        <textarea id="valuesInput">[["Header1","Header2"],["Value1","Value2"]]</textarea>
-        <div class="actions-row">
-          <button id="updateBtn">Update</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Logs</h3>
-        <pre id="logs">Ready.</pre>
-      </div> -->
     </div>
+
     <div id="modalBackdrop" class="modal-backdrop">
       <div class="modal">
         <h4 id="modalTitle">Confirm</h4>
@@ -96,14 +189,13 @@
         </div>
       </div>
     </div>
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
     <script>
-      const logEl = document.getElementById("logs");
       const userIdEl = document.getElementById("userId");
       const sheetSelect = document.getElementById("sheetSelect");
       const tabSelect = document.getElementById("tabSelect");
-      const savedSheetsListEl = document.getElementById("savedSheetsList");
-      const rangeInput = document.getElementById("rangeInput");
-      const valuesInput = document.getElementById("valuesInput");
+      const selectedSheetBox = document.getElementById("selectedSheetBox");
       const modalBackdrop = document.getElementById("modalBackdrop");
       const modalTitle = document.getElementById("modalTitle");
       const modalMessage = document.getElementById("modalMessage");
@@ -111,23 +203,37 @@
       const modalConfirmBtn = document.getElementById("modalConfirmBtn");
       const syncToggleBtn = document.getElementById("syncToggleBtn");
       const syncToggleStatus = document.getElementById("syncToggleStatus");
-      const token = localStorage.getItem("auth_token");
-      const authEmail = localStorage.getItem("auth_email");
-      const authUserId = localStorage.getItem("auth_user_id");
-      if (!token) window.location.href = "/app/login";
-      userIdEl.value = authEmail || authUserId || "Authenticated user";
+      const loadSheetsBtn = document.getElementById("loadSheetsBtn");
+      const selectSheetBtn = document.getElementById("selectSheetBtn");
+      const toastStack = document.getElementById("toastStack");
 
       function headers() {
-        return {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("auth_token")}`
-        };
+        return { "Content-Type": "application/json" };
       }
-      function log(msg) {
-        if (!logEl) return;
-        const line = typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
-        logEl.textContent = `${line}\n\n${logEl.textContent}`;
+
+      function showToast(message, type = "error") {
+        const toast = document.createElement("div");
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        toastStack.appendChild(toast);
+        setTimeout(() => {
+          toast.remove();
+        }, 3400);
       }
+
+      async function withButtonLoading(button, loadingText, action) {
+        const originalText = button.textContent;
+        const wasDisabled = button.disabled;
+        button.disabled = true;
+        button.textContent = loadingText;
+        try {
+          return await action();
+        } finally {
+          button.textContent = originalText;
+          button.disabled = wasDisabled;
+        }
+      }
+
       function showModal({ title, message, confirmText = "Confirm", cancelText = "Cancel", hideCancel = false }) {
         return new Promise((resolve) => {
           modalTitle.textContent = title;
@@ -136,7 +242,6 @@
           modalCancelBtn.textContent = cancelText;
           modalCancelBtn.style.display = hideCancel ? "none" : "inline-block";
           modalBackdrop.style.display = "flex";
-
           const close = (result) => {
             modalBackdrop.style.display = "none";
             modalConfirmBtn.onclick = null;
@@ -146,70 +251,6 @@
           modalConfirmBtn.onclick = () => close(true);
           modalCancelBtn.onclick = () => close(false);
         });
-      }
-
-      async function refreshSyncToggle() {
-        const res = await fetch("/integrations/google/sync-settings", { headers: headers() });
-        const data = await res.json();
-        const enabled = Boolean(data?.settings?.sync_enabled);
-        syncToggleBtn.textContent = enabled ? "Disable Sync" : "Enable Sync";
-        syncToggleBtn.className = enabled ? "" : "primary";
-        syncToggleStatus.textContent = enabled ? "Sync is enabled" : "Sync is disabled";
-      }
-
-      async function loadSavedSheets(autoSelectActive = true) {
-        const res = await fetch("/integrations/google/saved-sheets", { headers: headers() });
-        const data = await res.json();
-        savedSheetsListEl.innerHTML = "";
-        let activeSheet = null;
-        (data.saved_sheets || []).forEach((sheet) => {
-          if (sheet.is_active) activeSheet = sheet;
-          const row = document.createElement("div");
-          row.className = "saved-item";
-          const left = document.createElement("div");
-          left.innerHTML = `<strong>${sheet.spreadsheet_name}</strong>${sheet.is_active ? '<span class="active-pill">ACTIVE</span>' : ''}`;
-          const right = document.createElement("div");
-          const activateBtn = document.createElement("button");
-          activateBtn.textContent = "Set Active";
-          activateBtn.onclick = async () => {
-            const ok = await showModal({
-              title: "Make Sheet Active",
-              message: `Are you sure you want to make "${sheet.spreadsheet_name}" active?`,
-              confirmText: "Yes, Set Active",
-              cancelText: "Cancel"
-            });
-            if (!ok) return;
-            const resp = await fetch(`/integrations/google/saved-sheets/${sheet.spreadsheet_id}/activate`, {
-              method: "POST",
-              headers: headers()
-            });
-            const payload = await resp.json();
-            await showModal({
-              title: "Success",
-              message: "Sheet marked active.",
-              confirmText: "OK",
-              hideCancel: true
-            });
-            log(payload);
-            await loadSavedSheets(true);
-            await ensureSheetInDropdownAndSelect(sheet.spreadsheet_id, sheet.spreadsheet_name);
-            await loadTabsForSelectedSheet();
-            await previewRead();
-          };
-          const detailsLink = document.createElement("a");
-          detailsLink.href = `/app/sheets/details?spreadsheet_id=${encodeURIComponent(sheet.spreadsheet_id)}`;
-          detailsLink.textContent = "Details";
-          detailsLink.style.marginLeft = "8px";
-          right.appendChild(activateBtn);
-          right.appendChild(detailsLink);
-          row.appendChild(left);
-          row.appendChild(right);
-          savedSheetsListEl.appendChild(row);
-        });
-        log({ saved_sheets: data });
-        if (autoSelectActive && activeSheet) {
-          await ensureSheetInDropdownAndSelect(activeSheet.spreadsheet_id, activeSheet.spreadsheet_name);
-        }
       }
 
       async function ensureSheetInDropdownAndSelect(spreadsheetId, spreadsheetName) {
@@ -224,10 +265,53 @@
         sheetSelect.value = spreadsheetId;
       }
 
+      async function refreshSyncToggle() {
+        const res = await fetch("/integrations/google/sync-settings", { headers: headers() });
+        if (!res.ok) {
+          showToast("Unable to load sync settings. Please refresh and try again.");
+          return;
+        }
+        const data = await res.json();
+        const enabled = Boolean(data?.settings?.sync_enabled);
+        syncToggleBtn.textContent = enabled ? "Disable Sync" : "Enable Sync";
+        syncToggleBtn.className = enabled ? "" : "primary";
+        syncToggleStatus.textContent = enabled ? "Sync is enabled" : "Sync is disabled";
+      }
+
+      async function loadSelectedSheet() {
+        const res = await fetch("/integrations/google/selected-sheet", { headers: headers() });
+        if (!res.ok) {
+          showToast("Unable to load selected sheet. Please try again.");
+          return;
+        }
+        const data = await res.json();
+        const selected = data.selected_sheet;
+        if (!selected) {
+          selectedSheetBox.textContent = "No sheet selected.";
+          return;
+        }
+        const sheetUrl = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(selected.spreadsheet_id)}`;
+        selectedSheetBox.innerHTML = `
+          <div class="selected-name">${selected.spreadsheet_name}</div>
+          <div class="selected-id">${selected.spreadsheet_id}</div>
+          <a class="selected-link" href="${sheetUrl}" target="_blank" rel="noopener noreferrer">
+            Open Google Sheet
+          </a>
+        `;
+        await ensureSheetInDropdownAndSelect(selected.spreadsheet_id, selected.spreadsheet_name);
+      }
+
       async function loadTabsForSelectedSheet() {
         const opt = sheetSelect.options[sheetSelect.selectedIndex];
-        if (!opt) return;
+        if (!opt) {
+          tabSelect.innerHTML = "";
+          return;
+        }
         const res = await fetch(`/integrations/google/sheets/${opt.value}/tabs`, { headers: headers() });
+        if (!res.ok) {
+          showToast("Could not load tabs for this sheet.");
+          return;
+        }
         const data = await res.json();
         tabSelect.innerHTML = "";
         (data.tabs || []).forEach((tab) => {
@@ -236,126 +320,87 @@
           t.textContent = tab;
           tabSelect.appendChild(t);
         });
-        if (rangeInput && tabSelect.options.length > 0) {
-          rangeInput.value = tabSelect.options[0].value;
-        }
-        log({ tabs: data });
       }
 
-      document.getElementById("loadSheetsBtn").onclick = async () => {
+      loadSheetsBtn.onclick = async () => withButtonLoading(loadSheetsBtn, "Loading...", async () => {
         const res = await fetch("/integrations/google/sheets", { headers: headers() });
+        if (!res.ok) {
+          showToast("Unable to load your Google Sheets. Please try again.");
+          return;
+        }
         const data = await res.json();
-        log(data);
         sheetSelect.innerHTML = "";
         (data.files || []).forEach((f) => {
           const opt = document.createElement("option");
           opt.value = f.id;
-          opt.textContent = `${f.name}`;
+          opt.textContent = f.name;
           opt.dataset.name = f.name;
           sheetSelect.appendChild(opt);
         });
+        await loadSelectedSheet();
         await loadTabsForSelectedSheet();
+      });
+
+      selectSheetBtn.onclick = async () => {
+        const opt = sheetSelect.options[sheetSelect.selectedIndex];
+        if (!opt) return;
+        const ok = await showModal({
+          title: "Confirm Selected Sheet",
+          message: `Are you sure you want to select "${opt.dataset.name || opt.textContent}"? Make sure you are selecting the right sheet.`,
+          confirmText: "Yes, Select Sheet",
+          cancelText: "Cancel"
+        });
+        if (!ok) return;
+        await withButtonLoading(selectSheetBtn, "Selecting...", async () => {
+          const payload = { spreadsheet_id: opt.value, spreadsheet_name: opt.dataset.name || opt.textContent };
+          const res = await fetch("/integrations/google/selected-sheet", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            showToast(data.detail || "Unable to select this sheet. Please try again.");
+            return;
+          }
+          await loadSelectedSheet();
+          await loadTabsForSelectedSheet();
+          showToast("Sheet selected successfully.", "success");
+        });
       };
-      document.getElementById("loadSavedBtn").onclick = () => loadSavedSheets(false);
-      syncToggleBtn.onclick = async () => {
+
+      syncToggleBtn.onclick = async () => withButtonLoading(syncToggleBtn, "Updating...", async () => {
         const currentEnabled = syncToggleBtn.textContent === "Disable Sync";
-        const payload = { sync_enabled: !currentEnabled };
         const res = await fetch("/integrations/google/sync-settings", {
           method: "POST",
           headers: headers(),
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ sync_enabled: !currentEnabled }),
         });
         const data = await res.json();
         if (!res.ok) {
-          await showModal({
-            title: "Error",
-            message: data.detail || "Failed to update sync setting.",
-            confirmText: "OK",
-            hideCancel: true,
-          });
+          showToast(data.detail || "Unable to update sync settings right now.");
           return;
         }
         await refreshSyncToggle();
-      };
+        showToast(currentEnabled ? "Sync disabled." : "Sync enabled.", "success");
+      });
 
       sheetSelect.onchange = loadTabsForSelectedSheet;
-      tabSelect.onchange = () => {
-        const tab = tabSelect.value;
-        if (tab && rangeInput) rangeInput.value = tab;
-      };
 
-      document.getElementById("saveSelectedBtn").onclick = async () => {
-        const opt = sheetSelect.options[sheetSelect.selectedIndex];
-        if (!opt) return log("Select a sheet first");
-        const payload = { spreadsheet_id: opt.value, spreadsheet_name: opt.dataset.name || opt.textContent };
-        const res = await fetch("/integrations/google/saved-sheets", {
-          method: "POST",
-          headers: headers(),
-          body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        await showModal({
-          title: "Saved",
-          message: "Sheet saved successfully.",
-          confirmText: "OK",
-          hideCancel: true
-        });
-        log(data);
-        await loadSavedSheets(true);
-      };
-
-      async function previewRead() {
-        const opt = sheetSelect.options[sheetSelect.selectedIndex];
-        if (!opt) return;
-        const effectiveRange = rangeInput ? rangeInput.value.trim() || "Sheet1" : (tabSelect.value || "Sheet1");
-        const range = encodeURIComponent(effectiveRange);
-        const res = await fetch(`/integrations/google/sheets/${opt.value}?range=${range}`, { headers: headers() });
-        const data = await res.json();
-        log({ auto_read_preview: data });
-      }
-
-      const readBtn = document.getElementById("readBtn");
-      if (readBtn) {
-        readBtn.onclick = async () => {
-          const opt = sheetSelect.options[sheetSelect.selectedIndex];
-          if (!opt) return log("Select a sheet first");
-          const effectiveRange = rangeInput ? rangeInput.value.trim() || "Sheet1" : (tabSelect.value || "Sheet1");
-          const range = encodeURIComponent(effectiveRange);
-          const res = await fetch(`/integrations/google/sheets/${opt.value}?range=${range}`, { headers: headers() });
-          const data = await res.json();
-          log(data);
-        };
-      }
-
-      const updateBtn = document.getElementById("updateBtn");
-      if (updateBtn && valuesInput) {
-        updateBtn.onclick = async () => {
-          const opt = sheetSelect.options[sheetSelect.selectedIndex];
-          if (!opt) return log("Select a sheet first");
-          let values;
-          try {
-            values = JSON.parse(valuesInput.value.trim());
-          } catch {
-            return log("Invalid JSON in values field");
-          }
-          const payload = { range: rangeInput ? rangeInput.value.trim() || "Sheet1" : (tabSelect.value || "Sheet1"), values };
-          const res = await fetch(`/integrations/google/sheets/${opt.value}`, {
-            method: "POST",
-            headers: headers(),
-            body: JSON.stringify(payload)
-          });
-          const data = await res.json();
-          log(data);
-        };
-      }
-
-      // initial load
       (async () => {
-        await refreshSyncToggle();
-        await loadSavedSheets(true);
-        if (sheetSelect.options.length > 0) {
-          await loadTabsForSelectedSheet();
-          await previewRead();
+        try {
+          const meRes = await fetch("/auth/me");
+          if (!meRes.ok) {
+            window.location.href = "/app/connect";
+            return;
+          }
+          const me = await meRes.json();
+          userIdEl.value = me.email || me.user_id || "Authenticated user";
+          await refreshSyncToggle();
+          await loadSelectedSheet();
+          await loadSheetsBtn.onclick();
+        } catch {
+          showToast("Something went wrong while loading the dashboard.");
         }
       })();
     </script>
