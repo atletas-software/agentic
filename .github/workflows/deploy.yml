@@ -10,34 +10,24 @@ jobs:
 
     steps:
 
-    # ---------------------------
-    # 1. CREATE env-backup LOCALLY (GitHub runner)
-    # ---------------------------
     - name: Create env-backup file
       run: |
         cat <<EOF > env-backup
         DATABASE_URL=${{ secrets.DATABASE_URL }}
-        
         GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
         GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
         GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}
-        
         SYNC_POLL_ENABLED=${{ secrets.SYNC_POLL_ENABLED }}
         POLL_TICK_SECONDS=${{ secrets.POLL_TICK_SECONDS }}
         REDIS_URL=${{ secrets.REDIS_URL }}
         SYNC_QUEUE_NAME=${{ secrets.SYNC_QUEUE_NAME }}
-        
         SYNC_QUOTA_BACKOFF_BASE_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_BASE_MINUTES }}
         SYNC_QUOTA_BACKOFF_MAX_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_MAX_MINUTES }}
-        
         DESTINATION_GOOGLE_CREDENTIALS_FILE=${{ secrets.DESTINATION_GOOGLE_CREDENTIALS_FILE }}
         DESTINATION_SPREADSHEET_ID=${{ secrets.DESTINATION_SPREADSHEET_ID }}
         EOF
 
-    # ---------------------------
-    # 2. SEND FILE TO SERVER
-    # ---------------------------
-    - name: Upload env-backup to server
+    - name: Upload file
       uses: appleboy/scp-action@v0.1.7
       with:
         host: ${{ secrets.SERVER_HOST }}
@@ -46,10 +36,7 @@ jobs:
         source: "env-backup"
         target: "/var/www/html/project/agentic/"
 
-    # ---------------------------
-    # 3. SSH DEPLOY
-    # ---------------------------
-    - name: Deploy via SSH
+    - name: Deploy
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SERVER_HOST }}
@@ -60,15 +47,10 @@ jobs:
           set -e
 
           cd /var/www/html/project/agentic
-
-          echo "🔄 Pull latest code"
+          
           git pull origin main
+          rm -rf .env
+          cp env-backup .env
+          chmod 600 .env
 
-          echo "🧹 Create .env from backup"
-          cp env-backup env
-
-
-          echo "🐳 Restart containers"
           docker compose up -d --build --remove-orphans
-
-          echo "✅ Deployment completed"
