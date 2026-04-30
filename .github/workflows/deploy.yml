@@ -10,36 +10,47 @@ jobs:
 
     steps:
 
-    # -----------------------------
-    # 1. CREATE env-backup locally
-    # -----------------------------
+    # ---------------------------------
+    # 1. CREATE .env FILE
+    # ---------------------------------
     - name: Create env-backup
       run: |
-        cat <<EOF > env-backup
+        cat <<EOF > $GITHUB_WORKSPACE/env-backup
         DATABASE_URL=${{ secrets.DATABASE_URL }}
+        
         GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
         GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
         GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}
+        
         SYNC_POLL_ENABLED=${{ secrets.SYNC_POLL_ENABLED }}
         POLL_TICK_SECONDS=${{ secrets.POLL_TICK_SECONDS }}
         REDIS_URL=${{ secrets.REDIS_URL }}
         SYNC_QUEUE_NAME=${{ secrets.SYNC_QUEUE_NAME }}
+        
         SYNC_QUOTA_BACKOFF_BASE_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_BASE_MINUTES }}
         SYNC_QUOTA_BACKOFF_MAX_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_MAX_MINUTES }}
+        
         DESTINATION_GOOGLE_CREDENTIALS_FILE=${{ secrets.DESTINATION_GOOGLE_CREDENTIALS_FILE }}
         DESTINATION_SPREADSHEET_ID=${{ secrets.DESTINATION_SPREADSHEET_ID }}
         EOF
 
-    # -----------------------------
-    # 2. CREATE credential.json locally
-    # -----------------------------
+    # ---------------------------------
+    # 2. CREATE credential.json
+    # ---------------------------------
     - name: Create credential.json
       run: |
-        echo '${{ secrets.CREDENTIALS_JSON }}' > credential.json
+        printf '%s' "${{ secrets.CREDENTIALS_JSON }}" > $GITHUB_WORKSPACE/credential.json
 
-    # -----------------------------
-    # 3. UPLOAD FILES TO SERVER
-    # -----------------------------
+    # ---------------------------------
+    # 3. VERIFY FILES (DEBUG SAFETY)
+    # ---------------------------------
+    - name: Verify files
+      run: |
+        ls -la $GITHUB_WORKSPACE
+
+    # ---------------------------------
+    # 4. UPLOAD FILES TO SERVER
+    # ---------------------------------
     - name: Upload files
       uses: appleboy/scp-action@v0.1.7
       with:
@@ -51,10 +62,10 @@ jobs:
           credential.json
         target: /var/www/html/project/agentic/
 
-    # -----------------------------
-    # 4. DEPLOY ON SERVER
-    # -----------------------------
-    - name: Deploy
+    # ---------------------------------
+    # 5. DEPLOY ON SERVER
+    # ---------------------------------
+    - name: Deploy via SSH
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SERVER_HOST }}
@@ -69,8 +80,8 @@ jobs:
           echo "🔄 Pull latest code"
           git pull origin main
 
-          echo "🧹 Remove old credentials"
-          rm -f credential.json .env
+          echo "🧹 Remove old files"
+          rm -f .env credential.json
 
           echo "📦 Move new files into place"
           mv env-backup .env
