@@ -90,7 +90,7 @@ jobs:
           echo "📦 Apply env"
           mv env-backup .env
 
-          chmod 600 .env credential.json
+          chmod 600 .env credentials.json
 
           echo "🐳 Restart Docker"
           docker compose up -d --build --remove-orphans
