@@ -85,7 +85,7 @@ jobs:
           rm -f credential.json .env
 
           echo "📦 Rename credential-json → credential.json"
-          mv credential-json credential.json
+          mv credential-json credentials.json
 
           echo "📦 Apply env"
           mv env-backup .env
