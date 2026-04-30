@@ -42,18 +42,16 @@ jobs:
         echo '${{ secrets.CREDENTIALS_JSON }}' > credential.json
 
     # ---------------------------------
-    # 3. DEBUG (IMPORTANT - prevents SCP failures)
+    # 3. VERIFY FILES (IMPORTANT DEBUG STEP)
     # ---------------------------------
     - name: Verify files exist
       run: |
         ls -la
-        echo "---- env-backup ----"
-        cat env-backup
-        echo "---- credential.json ----"
-        cat credential.json
+        test -f env-backup || exit 1
+        test -f credential.json || exit 1
 
     # ---------------------------------
-    # 4. UPLOAD FILES VIA SCP
+    # 4. UPLOAD FILES VIA SCP (FIXED FORMAT)
     # ---------------------------------
     - name: Upload files
       uses: appleboy/scp-action@v0.1.7
@@ -84,16 +82,31 @@ jobs:
           echo "🔄 Pull latest code"
           git pull origin main
 
-          echo "🧹 Remove old config"
+          echo "📦 Checking uploaded files"
+          ls -la env-backup credential.json
+
+          echo "🧹 Cleaning old config"
           rm -f .env credential.json
 
-          echo "📦 Apply new config"
-          mv env-backup .env
-          mv credential.json credential.json
+          echo "📦 Applying new config"
+
+          if [ -f env-backup ]; then
+            mv env-backup .env
+          else
+            echo "❌ env-backup missing"
+            exit 1
+          fi
+
+          if [ -f credential.json ]; then
+            mv credential.json credential.json
+          else
+            echo "❌ credential.json missing"
+            exit 1
+          fi
 
           chmod 600 .env credential.json
 
-          echo "🐳 Restart containers"
+          echo "🐳 Restarting containers"
           docker compose up -d --build --remove-orphans
 
           echo "✅ Deployment completed successfully"
