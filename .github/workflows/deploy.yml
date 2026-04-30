@@ -35,7 +35,7 @@ jobs:
     # ---------------------------------
     - name: Create credential.json
       run: |
-        printf '%s' "${{ secrets.CREDENTIALS_JSON }}" > credential-json
+        printf '%s' "${{ secrets.CREDENTIALS_JSON }}" > credential.json
 
     # ---------------------------------
     # 4. UPLOAD FILES TO SERVER
@@ -49,7 +49,7 @@ jobs:
 
         source: |
           env-backup
-          credential-json
+          credential.json
 
         target: /var/www/html/project/agentic/
 
