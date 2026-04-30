@@ -11,6 +11,24 @@ jobs:
     steps:
     - name: Deploy to server
       uses: appleboy/ssh-action@v1.0.3
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+        GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+        GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
+
+        SYNC_POLL_ENABLED: ${{ secrets.SYNC_POLL_ENABLED }}
+        POLL_TICK_SECONDS: ${{ secrets.POLL_TICK_SECONDS }}
+        REDIS_URL: ${{ secrets.REDIS_URL }}
+        SYNC_QUEUE_NAME: ${{ secrets.SYNC_QUEUE_NAME }}
+
+        SYNC_QUOTA_BACKOFF_BASE_MINUTES: ${{ secrets.SYNC_QUOTA_BACKOFF_BASE_MINUTES }}
+        SYNC_QUOTA_BACKOFF_MAX_MINUTES: ${{ secrets.SYNC_QUOTA_BACKOFF_MAX_MINUTES }}
+
+        DESTINATION_GOOGLE_CREDENTIALS_FILE: ${{ secrets.DESTINATION_GOOGLE_CREDENTIALS_FILE }}
+        DESTINATION_SPREADSHEET_ID: ${{ secrets.DESTINATION_SPREADSHEET_ID }}
+
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USER }}
@@ -19,16 +37,37 @@ jobs:
         script: |
           set -e
 
-          echo "📂 Go to project directory"
           cd /var/www/html/project/agentic
 
           echo "🔄 Pull latest code"
           git pull origin main
 
-          echo "🐳 Stop old containers"
-          docker compose down
+          echo "🧹 Remove old .env"
+          rm -f .env
 
-          echo "🚀 Start new containers"
-          docker compose up -d --build
+          echo "📝 Create new .env"
+          cat <<EOF > .env
+          DATABASE_URL=$DATABASE_URL
+          
+          GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+          GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+          GOOGLE_REDIRECT_URI=$GOOGLE_REDIRECT_URI
+          
+          SYNC_POLL_ENABLED=$SYNC_POLL_ENABLED
+          POLL_TICK_SECONDS=$POLL_TICK_SECONDS
+          REDIS_URL=$REDIS_URL
+          SYNC_QUEUE_NAME=$SYNC_QUEUE_NAME
+          
+          SYNC_QUOTA_BACKOFF_BASE_MINUTES=$SYNC_QUOTA_BACKOFF_BASE_MINUTES
+          SYNC_QUOTA_BACKOFF_MAX_MINUTES=$SYNC_QUOTA_BACKOFF_MAX_MINUTES
+          
+          DESTINATION_GOOGLE_CREDENTIALS_FILE=$DESTINATION_GOOGLE_CREDENTIALS_FILE
+          DESTINATION_SPREADSHEET_ID=$DESTINATION_SPREADSHEET_ID
+          EOF
+
+          chmod 600 .env
+
+          echo "🐳 Restart containers"
+          docker compose up -d --build --remove-orphans
 
           echo "✅ Deployment completed"
