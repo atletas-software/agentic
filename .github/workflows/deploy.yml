@@ -11,47 +11,43 @@ jobs:
     steps:
 
     # ---------------------------------
-    # 1. CREATE .env FILE
+    # 1. CREATE env file
     # ---------------------------------
     - name: Create env-backup
       run: |
         cat <<EOF > env-backup
         DATABASE_URL=${{ secrets.DATABASE_URL }}
-        
         GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
         GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
         GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}
-        
         SYNC_POLL_ENABLED=${{ secrets.SYNC_POLL_ENABLED }}
         POLL_TICK_SECONDS=${{ secrets.POLL_TICK_SECONDS }}
         REDIS_URL=${{ secrets.REDIS_URL }}
         SYNC_QUEUE_NAME=${{ secrets.SYNC_QUEUE_NAME }}
-        
         SYNC_QUOTA_BACKOFF_BASE_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_BASE_MINUTES }}
         SYNC_QUOTA_BACKOFF_MAX_MINUTES=${{ secrets.SYNC_QUOTA_BACKOFF_MAX_MINUTES }}
-        
         DESTINATION_GOOGLE_CREDENTIALS_FILE=${{ secrets.DESTINATION_GOOGLE_CREDENTIALS_FILE }}
         DESTINATION_SPREADSHEET_ID=${{ secrets.DESTINATION_SPREADSHEET_ID }}
         EOF
 
     # ---------------------------------
-    # 2. CREATE credential.json
+    # 2. CREATE credential-json (NO .json EXTENSION YET)
     # ---------------------------------
-    - name: Create credential.json
+    - name: Create credential-json
       run: |
-        echo '${{ secrets.CREDENTIALS_JSON }}' > credential.json
+        echo '${{ secrets.CREDENTIALS_JSON }}' > credential-json
 
     # ---------------------------------
-    # 3. VERIFY FILES (IMPORTANT DEBUG STEP)
+    # 3. VERIFY FILES
     # ---------------------------------
-    - name: Verify files exist
+    - name: Verify files
       run: |
         ls -la
         test -f env-backup || exit 1
-        test -f credential.json || exit 1
+        test -f credential-json || exit 1
 
     # ---------------------------------
-    # 4. UPLOAD FILES VIA SCP (FIXED FORMAT)
+    # 4. SCP UPLOAD
     # ---------------------------------
     - name: Upload files
       uses: appleboy/scp-action@v0.1.7
@@ -60,7 +56,7 @@ jobs:
         username: ${{ secrets.SERVER_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-        source: "env-backup,credential.json"
+        source: "env-backup,credential-json"
 
         target: /var/www/html/project/agentic/
 
@@ -82,31 +78,21 @@ jobs:
           echo "🔄 Pull latest code"
           git pull origin main
 
-          echo "📦 Checking uploaded files"
-          ls -la env-backup credential.json
+          echo "📦 Checking files"
+          ls -la env-backup credential-json
 
-          echo "🧹 Cleaning old config"
-          rm -f .env credential.json
+          echo "🧹 Remove old credential.json"
+          rm -f credential.json .env
 
-          echo "📦 Applying new config"
+          echo "📦 Rename credential-json → credential.json"
+          mv credential-json credential.json
 
-          if [ -f env-backup ]; then
-            mv env-backup .env
-          else
-            echo "❌ env-backup missing"
-            exit 1
-          fi
-
-          if [ -f credential.json ]; then
-            mv credential.json credential.json
-          else
-            echo "❌ credential.json missing"
-            exit 1
-          fi
+          echo "📦 Apply env"
+          mv env-backup .env
 
           chmod 600 .env credential.json
 
-          echo "🐳 Restarting containers"
+          echo "🐳 Restart Docker"
           docker compose up -d --build --remove-orphans
 
           echo "✅ Deployment completed successfully"
