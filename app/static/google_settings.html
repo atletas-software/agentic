@@ -11,6 +11,7 @@
       .nav a { margin-right: 12px; color: #2563eb; text-decoration: none; font-weight: 600; }
       input, select { padding: 8px; width: 100%; margin-top: 6px; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; }
       button { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; cursor: pointer; }
+      button:disabled { opacity: 0.7; cursor: not-allowed; }
       .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
       .help { color: #4b5563; font-size: 14px; margin-top: 8px; }
       .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -20,6 +21,21 @@
       .skip-row { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin-top: 8px; background: #fff7ed; }
       .skip-meta { font-size: 12px; color: #6b7280; margin-bottom: 4px; }
       .skip-reason { color: #92400e; font-weight: 600; }
+      .toast-stack { position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10000; }
+      .toast {
+        min-width: 260px;
+        max-width: 360px;
+        background: #0f172a;
+        color: #fff;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        line-height: 1.35;
+        border-left: 4px solid #2563eb;
+        box-shadow: 0 10px 24px rgba(2, 6, 23, 0.25);
+      }
+      .toast.error { border-left-color: #ef4444; }
+      .toast.success { border-left-color: #10b981; }
     </style>
   </head>
   <body>
@@ -88,6 +104,7 @@
       </div>
 
     </div>
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
 
     <script>
       const userIdEl = document.getElementById("userId");
@@ -96,7 +113,13 @@
       const nextDueAtEl = document.getElementById("nextDueAt");
       const lastRunStatusEl = document.getElementById("lastRunStatus");
       const skippedRowsListEl = document.getElementById("skippedRowsList");
+      const loadBtn = document.getElementById("loadBtn");
+      const refreshStatusBtn = document.getElementById("refreshStatusBtn");
+      const manualSyncBtn = document.getElementById("manualSyncBtn");
+      const saveBtn = document.getElementById("saveBtn");
+      const toastStack = document.getElementById("toastStack");
       userIdEl.value = "Authenticated user";
+      let currentSyncEnabled = false;
 
       function headers() {
         return {
@@ -120,6 +143,27 @@
         return `${mins} minute${mins > 1 ? "s" : ""} ${rem} seconds`;
       }
 
+      function showToast(message, type = "error") {
+        const toast = document.createElement("div");
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        toastStack.appendChild(toast);
+        setTimeout(() => toast.remove(), 3200);
+      }
+
+      async function withButtonLoading(button, loadingText, action) {
+        const originalText = button.textContent;
+        const wasDisabled = button.disabled;
+        button.disabled = true;
+        button.textContent = loadingText;
+        try {
+          return await action();
+        } finally {
+          button.textContent = originalText;
+          button.disabled = wasDisabled;
+        }
+      }
+
       async function loadSettings() {
         const res = await fetch("/integrations/google/sync-settings", { headers: headers() });
         const data = await res.json();
@@ -133,6 +177,7 @@
         const res = await fetch("/integrations/google/sync-status", { headers: headers() });
         const data = await res.json();
         const status = data.status || {};
+        currentSyncEnabled = Boolean(status.sync_enabled);
         const intervalLabel = formatInterval(status.polling_interval_seconds);
         lastRunAtEl.textContent = `${formatDateTime(status.last_run_at)} (${intervalLabel})`;
         nextDueAtEl.textContent = formatDateTime(status.next_due_at);
@@ -160,26 +205,33 @@
         });
       }
 
-      document.getElementById("loadBtn").onclick = loadSettings;
-      document.getElementById("refreshStatusBtn").onclick = loadStatus;
-      document.getElementById("manualSyncBtn").onclick = async () => {
+      loadBtn.onclick = async () => withButtonLoading(loadBtn, "Loading...", loadSettings);
+      refreshStatusBtn.onclick = async () => withButtonLoading(refreshStatusBtn, "Refreshing...", loadStatus);
+      manualSyncBtn.onclick = async () => withButtonLoading(manualSyncBtn, "Running...", async () => {
+        if (!currentSyncEnabled) {
+          showToast("Enable sync from dashboard first, then run manual sync.");
+          return;
+        }
         const res = await fetch("/sync/run-once", {
           method: "POST",
           headers: headers(),
         });
-        const data = await res.json();
+        if (!res.ok) {
+          showToast("Unable to run manual sync right now.");
+          return;
+        }
+        showToast("Manual sync started.", "success");
         await loadStatus();
-      };
-      document.getElementById("saveBtn").onclick = async () => {
+      });
+      saveBtn.onclick = async () => withButtonLoading(saveBtn, "Saving...", async () => {
         const pollingSeconds = Number(pollingIntervalEl.value || 0);
-        const res = await fetch("/integrations/google/sync-settings", {
+        await fetch("/integrations/google/sync-settings", {
           method: "POST",
           headers: headers(),
           body: JSON.stringify({ polling_interval_seconds: pollingSeconds }),
         });
-        const data = await res.json();
         await loadStatus();
-      };
+      });
 
       (async () => {
         const meRes = await fetch("/auth/me");

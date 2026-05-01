@@ -41,6 +41,15 @@
         padding: 8px 12px;
         border-radius: 10px;
       }
+      .nav button {
+        color: #111827;
+        text-decoration: none;
+        font-weight: 600;
+        background: #fff;
+        border: 1px solid #d1d5db;
+        padding: 8px 12px;
+        border-radius: 10px;
+      }
       .card {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -102,6 +111,40 @@
       .selected-link:hover { text-decoration: underline; }
       .actions-row { margin: 14px 0 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
       .sync-status { font-size: 13px; color: var(--muted); margin-left: 2px; }
+      .sync-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: #475569;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 999px;
+        padding: 6px 10px;
+      }
+      .sync-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ef4444;
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+      }
+      .sync-dot.enabled {
+        background: #10b981;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+      }
+      .sync-warning {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #fdba74;
+        background: #fff7ed;
+        color: #9a3412;
+        font-size: 13px;
+        line-height: 1.4;
+        display: none;
+      }
+      .sync-warning strong { color: #7c2d12; }
       .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
       .modal { width: min(520px, 92vw); background: #fff; border-radius: 14px; border: 1px solid var(--border); box-shadow: 0 22px 48px rgba(0,0,0,.2); padding: 16px; }
       .modal h4 { margin: 0 0 8px; }
@@ -145,6 +188,7 @@
         </div>
         <div class="nav">
           <a href="/app/settings" title="Sync Settings">Settings</a>
+          <button id="logoutBtn" title="Logout">Logout</button>
         </div>
       </div>
 
@@ -153,7 +197,13 @@
         <input id="userId" value="" readonly />
         <div class="actions-row">
           <button id="syncToggleBtn" class="primary">Enable Sync</button>
-          <span id="syncToggleStatus" class="sync-status"></span>
+          <span class="sync-indicator">
+            <span id="syncDot" class="sync-dot" aria-hidden="true"></span>
+            <span id="syncToggleStatus" class="sync-status"></span>
+          </span>
+        </div>
+        <div id="syncWarning" class="sync-warning">
+          <strong>Sync is disabled.</strong> Data will not sync while disabled. Please enable sync to continue syncing data.
         </div>
       </div>
 
@@ -203,9 +253,12 @@
       const modalConfirmBtn = document.getElementById("modalConfirmBtn");
       const syncToggleBtn = document.getElementById("syncToggleBtn");
       const syncToggleStatus = document.getElementById("syncToggleStatus");
+      const syncDot = document.getElementById("syncDot");
+      const syncWarning = document.getElementById("syncWarning");
       const loadSheetsBtn = document.getElementById("loadSheetsBtn");
       const selectSheetBtn = document.getElementById("selectSheetBtn");
       const toastStack = document.getElementById("toastStack");
+      const logoutBtn = document.getElementById("logoutBtn");
 
       function headers() {
         return { "Content-Type": "application/json" };
@@ -275,7 +328,9 @@
         const enabled = Boolean(data?.settings?.sync_enabled);
         syncToggleBtn.textContent = enabled ? "Disable Sync" : "Enable Sync";
         syncToggleBtn.className = enabled ? "" : "primary";
-        syncToggleStatus.textContent = enabled ? "Sync is enabled" : "Sync is disabled";
+        syncToggleStatus.textContent = enabled ? "Sync enabled" : "Sync disabled";
+        syncDot.className = enabled ? "sync-dot enabled" : "sync-dot";
+        syncWarning.style.display = enabled ? "none" : "block";
       }
 
       async function loadSelectedSheet() {
@@ -369,8 +424,9 @@
         });
       };
 
-      syncToggleBtn.onclick = async () => withButtonLoading(syncToggleBtn, "Updating...", async () => {
+      syncToggleBtn.onclick = async () => {
         const currentEnabled = syncToggleBtn.textContent === "Disable Sync";
+        await withButtonLoading(syncToggleBtn, "Updating...", async () => {
         const res = await fetch("/integrations/google/sync-settings", {
           method: "POST",
           headers: headers(),
@@ -383,9 +439,14 @@
         }
         await refreshSyncToggle();
         showToast(currentEnabled ? "Sync disabled." : "Sync enabled.", "success");
-      });
+        });
+      };
 
       sheetSelect.onchange = loadTabsForSelectedSheet;
+      logoutBtn.onclick = async () => withButtonLoading(logoutBtn, "Logging out...", async () => {
+        await fetch("/auth/logout", { method: "POST" });
+        window.location.href = "/app/connect";
+      });
 
       (async () => {
         try {

@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin Panel</title>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+      .container { max-width: 1200px; margin: 0 auto; }
+      .page { padding: 28px 22px 40px; }
+      .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+      .page-title { margin: 0; font-size: 36px; line-height: 1.12; }
+      .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px; margin-bottom: 18px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05); }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { border-bottom: 1px solid #e2e8f0; padding: 11px 10px; text-align: left; vertical-align: top; }
+      th { font-size: 12px; color: #475569; text-transform: uppercase; letter-spacing: .02em; }
+      button { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; cursor: pointer; font-weight: 600; }
+      button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .muted { color: #64748b; font-size: 12px; }
+      .pill { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+      .ok { background: #dcfce7; color: #166534; }
+      .bad { background: #fee2e2; color: #991b1b; }
+      .table-wrap { overflow-x: auto; }
+      .raw-logs { min-width: 320px; }
+      .raw-log-group { font-size: 12px; margin-bottom: 8px; }
+      .raw-log-title { color: #475569; font-weight: 700; margin-bottom: 4px; }
+      .raw-log-line { display: block; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
+      .raw-log-actions { margin-top: 6px; }
+      .modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 1000; }
+      .modal { width: min(1100px, 96vw); max-height: 84vh; overflow: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px; box-shadow: 0 20px 42px rgba(2, 6, 23, 0.28); }
+      .modal-header { display:flex; justify-content: space-between; align-items:center; gap: 12px; margin-bottom: 12px; }
+      .modal-sections { display: grid; grid-template-columns: 1fr; gap: 14px; }
+      .modal-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px; }
+      .modal-card h4 { margin: 0 0 8px; font-size: 14px; }
+      .modal-empty { color: #64748b; font-size: 12px; }
+      @media (max-width: 760px) { .page-title { font-size: 30px; } .page-header { flex-direction: column; align-items: flex-start; } }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="page">
+      <div class="page-header">
+        <div>
+          <h2 class="page-title">Admin Panel</h2>
+          <div class="muted">Connected users and live sync logs.</div>
+        </div>
+        <button id="adminLogoutBtn">Admin Logout</button>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px;">
+          <button id="refreshUsersBtn" class="primary">Refresh Users</button>
+          <span id="usersMeta" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Selected Sheet</th>
+              <th>Sync</th>
+              <th>Last Sync</th>
+              <th>Total</th>
+              <th>Raw Logs (Last 2)</th>
+            </tr>
+          </thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <button id="usersPrevBtn">Prev</button>
+          <button id="usersNextBtn">Next</button>
+        </div>
+      </div>
+
+      </div>
+    </div>
+    <div id="rawLogsModalBackdrop" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 id="rawLogsTitle" style="margin:0;">Debug Logs</h3>
+          <div style="display:flex; gap:8px;">
+            <button id="rawLogsRefreshBtn">Refresh</button>
+            <button id="rawLogsCloseBtn">Close</button>
+          </div>
+        </div>
+        <div class="modal-sections">
+          <div class="modal-card">
+            <h4>Recent Runs</h4>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>ID</th><th>Status</th><th>Rows</th><th>Time</th><th>Error</th></tr>
+                </thead>
+                <tbody id="rawRunsBody"></tbody>
+              </table>
+            </div>
+            <div id="rawRunsEmpty" class="modal-empty" style="display:none;">No run logs.</div>
+          </div>
+          <div class="modal-card">
+            <h4>Recent Events</h4>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Run</th><th>Action</th><th>Status</th><th>Message</th><th>Time</th></tr>
+                </thead>
+                <tbody id="rawEventsBody"></tbody>
+              </table>
+            </div>
+            <div id="rawEventsEmpty" class="modal-empty" style="display:none;">No event logs.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const state = {
+        usersOffset: 0,
+        usersLimit: 20,
+        selectedRawLogsUserId: null,
+        selectedRawLogsEmail: null,
+      };
+      const rawLogsModalBackdrop = document.getElementById("rawLogsModalBackdrop");
+
+      async function fetchJson(url) {
+        const res = await fetch(url);
+        if (res.status === 401) {
+          window.location.href = "/admin/login?next=/admin";
+          throw new Error("Unauthorized");
+        }
+        if (res.status === 403) {
+          window.location.href = "/admin/login?next=/admin";
+          throw new Error("Forbidden");
+        }
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        return res.json();
+      }
+
+      function formatDateTime(value) {
+        if (!value) return "-";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString();
+      }
+
+      async function withButtonLoading(button, loadingText, action) {
+        const originalText = button.textContent;
+        const wasDisabled = button.disabled;
+        button.disabled = true;
+        button.textContent = loadingText;
+        try {
+          return await action();
+        } finally {
+          button.textContent = originalText;
+          button.disabled = wasDisabled;
+        }
+      }
+
+      async function loadUsers() {
+        const data = await fetchJson(`/admin-api/users?connected_only=true&offset=${state.usersOffset}&limit=${state.usersLimit}`);
+        document.getElementById("usersMeta").textContent = `Showing ${data.users.length} / ${data.pagination.total}`;
+        const tbody = document.getElementById("usersBody");
+        tbody.innerHTML = "";
+        data.users.forEach((u) => {
+          const runs = (u.raw_logs && u.raw_logs.runs) || [];
+          const events = (u.raw_logs && u.raw_logs.events) || [];
+          const runLines = runs.length
+            ? runs.map((r) => `<span class="raw-log-line">#${r.id} ${r.status} ${formatDateTime(r.started_at)}</span>`).join("")
+            : '<span class="raw-log-line muted">No recent runs</span>';
+          const eventLines = events.length
+            ? events.map((e) => `<span class="raw-log-line">${e.action}/${e.status} ${formatDateTime(e.created_at)}</span>`).join("")
+            : '<span class="raw-log-line muted">No recent events</span>';
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td><strong>${u.email}</strong><div class="muted">${u.user_id}</div></td>
+            <td>${u.selected_sheet ? `${u.selected_sheet.spreadsheet_name}<div class="muted">${u.selected_sheet.spreadsheet_id}</div>` : '<span class="muted">None</span>'}</td>
+            <td>${u.sync_enabled ? '<span class="pill ok">Enabled</span>' : '<span class="pill bad">Disabled</span>'}</td>
+            <td>${u.last_sync ? `${u.last_sync.status}<div class="muted">${formatDateTime(u.last_sync.started_at)}</div>` : '<span class="muted">Never</span>'}</td>
+            <td>${u.total_rows_synced} rows<div class="muted">${u.total_runs} runs</div></td>
+            <td class="raw-logs">
+              <div class="raw-log-group">
+                <div class="raw-log-title">Runs</div>
+                ${runLines}
+              </div>
+              <div class="raw-log-group">
+                <div class="raw-log-title">Events</div>
+                ${eventLines}
+              </div>
+              <div class="raw-log-actions">
+                <button data-full-view-user="${u.user_id}" data-full-view-email="${u.email}">Full View</button>
+              </div>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+        tbody.querySelectorAll("button[data-full-view-user]").forEach((btn) => {
+          btn.onclick = async () => withButtonLoading(btn, "Opening...", async () => {
+            state.selectedRawLogsUserId = btn.getAttribute("data-full-view-user");
+            state.selectedRawLogsEmail = btn.getAttribute("data-full-view-email");
+            rawLogsModalBackdrop.style.display = "flex";
+            await loadRawLogsFullView();
+          });
+        });
+      }
+
+      async function loadRawLogsFullView() {
+        if (!state.selectedRawLogsUserId) return;
+        const data = await fetchJson(`/admin-api/users/${state.selectedRawLogsUserId}/raw-logs?runs_limit=20&events_limit=20`);
+        document.getElementById("rawLogsTitle").textContent = `Debug Logs - ${state.selectedRawLogsEmail || state.selectedRawLogsUserId}`;
+
+        const runsBody = document.getElementById("rawRunsBody");
+        runsBody.innerHTML = "";
+        const runs = data.runs || [];
+        if (!runs.length) {
+          document.getElementById("rawRunsEmpty").style.display = "block";
+        } else {
+          document.getElementById("rawRunsEmpty").style.display = "none";
+          runs.forEach((r) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>#${r.id}</td><td>${r.status}</td><td>${(r.rows_inserted || 0) + (r.rows_updated || 0)} / ${r.rows_scanned || 0}</td><td>${formatDateTime(r.started_at)}</td><td>${r.error_message || "-"}</td>`;
+            runsBody.appendChild(tr);
+          });
+        }
+
+        const eventsBody = document.getElementById("rawEventsBody");
+        eventsBody.innerHTML = "";
+        const events = data.events || [];
+        if (!events.length) {
+          document.getElementById("rawEventsEmpty").style.display = "block";
+        } else {
+          document.getElementById("rawEventsEmpty").style.display = "none";
+          events.forEach((e) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>#${e.run_id}</td><td>${e.action}</td><td>${e.status}</td><td>${e.message || "-"}</td><td>${formatDateTime(e.created_at)}</td>`;
+            eventsBody.appendChild(tr);
+          });
+        }
+      }
+
+      function closeRawLogsModal() {
+        rawLogsModalBackdrop.style.display = "none";
+      }
+
+      document.getElementById("refreshUsersBtn").onclick = async (event) => withButtonLoading(event.currentTarget, "Refreshing...", loadUsers);
+      document.getElementById("usersPrevBtn").onclick = async (event) => withButtonLoading(event.currentTarget, "Loading...", async () => {
+        state.usersOffset = Math.max(0, state.usersOffset - state.usersLimit);
+        await loadUsers();
+      });
+      document.getElementById("usersNextBtn").onclick = async (event) => withButtonLoading(event.currentTarget, "Loading...", async () => {
+        state.usersOffset += state.usersLimit;
+        await loadUsers();
+      });
+      document.getElementById("rawLogsRefreshBtn").onclick = async (event) => withButtonLoading(event.currentTarget, "Refreshing...", loadRawLogsFullView);
+      document.getElementById("rawLogsCloseBtn").onclick = closeRawLogsModal;
+      document.getElementById("adminLogoutBtn").onclick = async (event) => withButtonLoading(event.currentTarget, "Logging out...", async () => {
+        await fetch("/admin-auth/logout", { method: "POST" });
+        window.location.href = "/admin/login";
+      });
+      rawLogsModalBackdrop.addEventListener("click", (event) => {
+        if (event.target === rawLogsModalBackdrop) closeRawLogsModal();
+      });
+
+      (async () => {
+        const me = await fetch("/admin-auth/me");
+        if (!me.ok) {
+          window.location.href = "/admin/login?next=/admin";
+          return;
+        }
+        await loadUsers();
+      })();
+    </script>
+  </body>
+</html>

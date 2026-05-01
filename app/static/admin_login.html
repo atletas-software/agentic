@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin Login</title>
+    <style>
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f8fafc; font-family: Inter, Arial, sans-serif; }
+      .card { width: min(420px, 92vw); background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 20px; }
+      h2 { margin: 0 0 10px; }
+      p { margin: 0 0 16px; color: #64748b; }
+      label { display: block; margin: 8px 0 6px; font-size: 13px; color: #334155; }
+      input { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+      button { margin-top: 14px; width: 100%; border: 1px solid #2563eb; background: #2563eb; color: #fff; border-radius: 8px; padding: 10px; font-weight: 600; cursor: pointer; }
+      .error { margin-top: 10px; color: #b91c1c; min-height: 20px; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>Admin Sign In</h2>
+      <p>This session is separate from normal user login.</p>
+      <label for="email">Admin Email</label>
+      <input id="email" type="email" autocomplete="username" />
+      <label for="password">Admin Password</label>
+      <input id="password" type="password" autocomplete="current-password" />
+      <button id="loginBtn">Login</button>
+      <div id="error" class="error"></div>
+    </div>
+    <script>
+      const NEXT_PATH = "__ADMIN_NEXT__";
+      const loginBtn = document.getElementById("loginBtn");
+      const emailInput = document.getElementById("email");
+      const passwordInput = document.getElementById("password");
+      const errorEl = document.getElementById("error");
+
+      async function submit() {
+        errorEl.textContent = "";
+        const email = emailInput.value.trim();
+        const password = passwordInput.value;
+        if (!email || !password) {
+          errorEl.textContent = "Enter both email and password.";
+          return;
+        }
+        loginBtn.disabled = true;
+        const old = loginBtn.textContent;
+        loginBtn.textContent = "Signing in...";
+        try {
+          const res = await fetch("/admin-auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
+          if (!res.ok) {
+            errorEl.textContent = "Invalid admin credentials.";
+            return;
+          }
+          window.location.href = NEXT_PATH;
+        } catch {
+          errorEl.textContent = "Login failed. Try again.";
+        } finally {
+          loginBtn.disabled = false;
+          loginBtn.textContent = old;
+        }
+      }
+
+      loginBtn.onclick = submit;
+      passwordInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") submit();
+      });
+    </script>
+  </body>
+</html>

@@ -67,6 +67,10 @@
         font-weight: 600;
         cursor: pointer;
       }
+      button:disabled {
+        opacity: .7;
+        cursor: not-allowed;
+      }
       .primary {
         display: inline-flex;
         align-items: center;
@@ -106,7 +110,21 @@
       </div>
     </div>
     <script>
+      const connectBtn = document.getElementById("connectBtn");
       const logoutBtn = document.getElementById("logoutBtn");
+
+      async function withButtonLoading(button, loadingText, action) {
+        const originalText = button.textContent;
+        const wasDisabled = button.disabled;
+        button.disabled = true;
+        button.textContent = loadingText;
+        try {
+          return await action();
+        } finally {
+          button.textContent = originalText;
+          button.disabled = wasDisabled;
+        }
+      }
 
       async function ensureSession() {
         try {
@@ -123,23 +141,21 @@
         }
       }
 
-      document.getElementById("connectBtn").onclick = async () => {
+      connectBtn.onclick = async () => withButtonLoading(connectBtn, "Connecting...", async () => {
         const res = await fetch("/integrations/google/connect");
-        if (!res.ok) {
-          return;
-        }
+        if (!res.ok) return;
         const data = await res.json();
         if (data.authorization_url) {
           window.location.href = data.authorization_url;
         } else {
           window.location.href = "/app/sheets";
         }
-      };
+      });
 
-      logoutBtn.onclick = async () => {
+      logoutBtn.onclick = async () => withButtonLoading(logoutBtn, "Logging out...", async () => {
         await fetch("/auth/logout", { method: "POST" });
         window.location.href = "/app/connect";
-      };
+      });
       ensureSession();
     </script>
   </body>

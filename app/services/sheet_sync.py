@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any
 
+import redis
 from sqlalchemy.orm import Session
 
 from app.core.logger import error, info
@@ -64,6 +66,68 @@ DESTINATION_HEADERS = [
 REQUIRED_DESTINATION_SYNC_HEADERS = SYNC_DESTINATION_HEADERS
 SOURCE_SYNC_STATUS_HEADER = "sync_status"
 
+SOURCE_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
+    "First and Last name": (
+        "name",
+        "first and last name",
+        "player name/ team name",
+        "player name/team name",
+        "player name team name",
+    ),
+    "Team color": (
+        "team color",
+        "team colour",
+        "color",
+        "colour",
+        "clour",
+    ),
+    "Team Number": (
+        "team number",
+        "number",
+        "jersey number",
+        "jersey no",
+        "jersey #",
+    ),
+    "Position Played": ("position played", "position", "position play"),
+    "Game Details - LOG IN INFO FOR THE SITE When you were subbed in or out": (
+        "game details",
+        "game details - log in info",
+        "game details - log in info for the site when you were subbed in or out",
+    ),
+    "Link to game": (
+        "link to game",
+        "link to the game",
+        "game video",
+        "link to the game video",
+        "link to game video",
+    ),
+}
+
+OPTIONAL_SOURCE_HEADERS = ["Timestamp", "Date"]
+
+DEFAULT_HASH_FIELDS = ("name", "color", "jersey", "position", "game_details", "video", "timestamp", "date")
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+SYNC_USER_LOCK_TTL_SECONDS = int(os.getenv("SYNC_USER_LOCK_TTL_SECONDS", "300"))
+SYNC_USER_LOCK_PREFIX = os.getenv("SYNC_USER_LOCK_PREFIX", "sheet-sync-lock")
+SYNC_RECONCILE_DESTINATION = os.getenv("SYNC_RECONCILE_DESTINATION", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _parse_hash_fields() -> tuple[str, ...]:
+    raw = os.getenv("SYNC_HASH_FIELDS", "")
+    if not raw.strip():
+        return DEFAULT_HASH_FIELDS
+    parsed = tuple(field.strip().lower() for field in raw.split(",") if field.strip())
+    return parsed or DEFAULT_HASH_FIELDS
+
+
+HASH_FIELDS = _parse_hash_fields()
+
 
 def _normalize_row(headers: list[str], row: list[Any]) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -74,8 +138,124 @@ def _normalize_row(headers: list[str], row: list[Any]) -> dict[str, str]:
 
 def _normalize_header_key(value: str) -> str:
     # Collapse newlines and extra spaces so "Game Details -\nLOG IN..." still matches.
-    compact = re.sub(r"\s+", " ", (value or "").strip())
+    compact = re.sub(r"[^a-zA-Z0-9]+", " ", (value or "").strip())
+    compact = re.sub(r"\s+", " ", compact)
     return compact.lower()
+
+
+def _normalize_for_hash(field: str, value: str) -> str:
+    compact = re.sub(r"\s+", " ", (value or "").strip())
+    if field in {"name", "position", "game_details"}:
+        return compact.lower()
+    if field in {"color"}:
+        return compact.lower().replace("colour", "color")
+    if field == "jersey":
+        return re.sub(r"[^\d]", "", compact) or compact.lower()
+    if field == "video":
+        lowered = compact.lower()
+        lowered = re.sub(r"^https?://(www\.)?", "", lowered)
+        return lowered.rstrip("/")
+    if field in {"timestamp", "date"}:
+        return compact
+    return compact.lower()
+
+
+def _canonical_source_value(source_values: dict[str, str], resolved_headers: dict[str, str], canonical: str) -> str:
+    col = resolved_headers.get(canonical, canonical)
+    return source_values.get(col, "").strip()
+
+
+def _build_source_business_values(source_values: dict[str, str], resolved_headers: dict[str, str]) -> dict[str, str]:
+    return {
+        "name": _canonical_source_value(source_values, resolved_headers, "First and Last name"),
+        "color": _canonical_source_value(source_values, resolved_headers, "Team color"),
+        "jersey": _canonical_source_value(source_values, resolved_headers, "Team Number"),
+        "position": _canonical_source_value(source_values, resolved_headers, "Position Played"),
+        "game_details": _canonical_source_value(
+            source_values,
+            resolved_headers,
+            "Game Details - LOG IN INFO FOR THE SITE When you were subbed in or out",
+        ),
+        "video": _canonical_source_value(source_values, resolved_headers, "Link to game"),
+        "timestamp": _canonical_source_value(source_values, resolved_headers, "Timestamp"),
+        "date": _canonical_source_value(source_values, resolved_headers, "Date"),
+    }
+
+
+def _build_hash_payload(source_business_values: dict[str, str]) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for field in HASH_FIELDS:
+        payload[field] = _normalize_for_hash(field, source_business_values.get(field, ""))
+    return payload
+
+
+def _business_row_key(spreadsheet_id: str, tab_name: str, source_business_values: dict[str, str]) -> str:
+    key_fields = {
+        "name": _normalize_for_hash("name", source_business_values.get("name", "")),
+        "jersey": _normalize_for_hash("jersey", source_business_values.get("jersey", "")),
+        "video": _normalize_for_hash("video", source_business_values.get("video", "")),
+        "date": _normalize_for_hash("date", source_business_values.get("date", "")),
+        "timestamp": _normalize_for_hash("timestamp", source_business_values.get("timestamp", "")),
+        "position": _normalize_for_hash("position", source_business_values.get("position", "")),
+        "game_details": _normalize_for_hash("game_details", source_business_values.get("game_details", "")),
+    }
+    digest = hashlib.sha256(json.dumps(key_fields, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:24]
+    return f"{spreadsheet_id}:{tab_name}:{digest}"
+
+
+def _destination_field_changes(
+    *,
+    existing_row: list[str] | None,
+    destination_headers: list[str],
+    new_row: list[str],
+) -> dict[str, dict[str, str]]:
+    if not existing_row:
+        return {}
+    changes: dict[str, dict[str, str]] = {}
+    watch_fields = {
+        "First and Last name",
+        "Team color",
+        "Team Number",
+        "Position Played",
+        "Game Details - LOG IN INFO FOR THE SITE When you were subbed in or out",
+        "Link to game",
+        "Timestamp",
+        "Date",
+    }
+    for idx, header in enumerate(destination_headers):
+        if header not in watch_fields:
+            continue
+        old = str(existing_row[idx]) if idx < len(existing_row) and existing_row[idx] is not None else ""
+        new = str(new_row[idx]) if idx < len(new_row) and new_row[idx] is not None else ""
+        if old != new:
+            changes[header] = {"from": old, "to": new}
+    return changes
+
+
+def _with_user_lock(user_id: str):
+    if not REDIS_URL:
+        return None, None, True
+    lock_key = f"{SYNC_USER_LOCK_PREFIX}:{user_id}"
+    token = hashlib.sha256(f"{user_id}:{datetime.now(UTC).isoformat()}".encode("utf-8")).hexdigest()
+    try:
+        client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        acquired = bool(client.set(lock_key, token, nx=True, ex=SYNC_USER_LOCK_TTL_SECONDS))
+        return client, (lock_key, token), acquired
+    except Exception as exc:  # noqa: BLE001
+        info("sync_lock_unavailable", user_id=user_id, error=str(exc))
+        return None, None, True
+
+
+def _release_user_lock(client: redis.Redis | None, lock_meta: tuple[str, str] | None) -> None:
+    if client is None or lock_meta is None:
+        return
+    lock_key, token = lock_meta
+    try:
+        current = client.get(lock_key)
+        if current == token:
+            client.delete(lock_key)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _resolve_source_header_aliases(source_headers: list[str]) -> tuple[dict[str, str], list[str]]:
@@ -83,14 +263,15 @@ def _resolve_source_header_aliases(source_headers: list[str]) -> tuple[dict[str,
     resolved: dict[str, str] = {}
     missing: list[str] = []
     for required in REQUIRED_SOURCE_HEADERS:
-        normalized_required = _normalize_header_key(required)
-        exact = normalized_to_original.get(normalized_required)
-        if exact is not None:
-            resolved[required] = exact
-            continue
-        # Fallback for headers that can vary by line breaks/spaces around "Game Details".
-        if required.lower().startswith("game details"):
-            candidate = next(
+        candidates = (required, *SOURCE_HEADER_ALIASES.get(required, ()))
+        matched = None
+        for candidate in candidates:
+            matched = normalized_to_original.get(_normalize_header_key(candidate))
+            if matched is not None:
+                break
+        if matched is None and required.lower().startswith("game details"):
+            # Fallback for variants around "Game Details - LOG IN INFO ...".
+            matched = next(
                 (
                     original
                     for norm, original in normalized_to_original.items()
@@ -98,10 +279,15 @@ def _resolve_source_header_aliases(source_headers: list[str]) -> tuple[dict[str,
                 ),
                 None,
             )
-            if candidate is not None:
-                resolved[required] = candidate
-                continue
-        missing.append(required)
+        if matched is None:
+            missing.append(required)
+            continue
+        resolved[required] = matched
+
+    for optional in OPTIONAL_SOURCE_HEADERS:
+        matched = normalized_to_original.get(_normalize_header_key(optional))
+        if matched is not None:
+            resolved[optional] = matched
     return resolved, missing
 
 
@@ -422,6 +608,10 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
     run_count = 0
 
     for selected in selected_sheets:
+        lock_client, lock_meta, lock_acquired = _with_user_lock(selected.user_id)
+        if not lock_acquired:
+            info("sync_user_skipped_locked", user_id=selected.user_id)
+            continue
         try:
             user_id_int = int(selected.user_id)
         except ValueError:
@@ -435,7 +625,7 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
         if setting is None or not setting.sync_enabled:
             info("sync_user_skipped_disabled", user_id=selected.user_id)
             continue
-        target_sheet_name = destination.user_sheet_name(selected.user_id)
+        target_sheet_name = destination.user_sheet_name(user_account.email)
         headers, dest_rows = destination.load_headers_and_rows(
             sheet_name=target_sheet_name,
             ensure_sheet=True,
@@ -499,20 +689,15 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
             rows = values[1:]
             run.rows_scanned = len(rows)
             if missing:
-                run.status = "FAILED"
-                run.error_message = f"Missing required columns: {', '.join(missing)}"
-                for idx in range(2, len(rows) + 2):
-                    try:
-                        _mark_source_row_failed(
-                            user_id=selected.user_id,
-                            spreadsheet_id=selected.spreadsheet_id,
-                            tab_name=tab_name,
-                            source_headers=source_headers,
-                            row_number=idx,
-                            db=db,
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
+                run.error_message = f"Unresolved source columns: {', '.join(missing)}"
+                info(
+                    "sync_source_headers_partially_resolved",
+                    user_id=selected.user_id,
+                    spreadsheet_id=selected.spreadsheet_id,
+                    tab_name=tab_name,
+                    missing=missing,
+                    source_headers=source_headers,
+                )
                 _event(
                     db=db,
                     run_id=run.id,
@@ -522,13 +707,11 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                     source_row_key=f"{selected.spreadsheet_id}:{tab_name}:*",
                     row_number=0,
                     action="VALIDATE",
-                    status="FAILED",
-                    message=run.error_message,
+                    status="SUCCESS",
+                    message=f"Proceeding with flexible header mapping; unresolved headers: {', '.join(missing)}",
                 )
-                run.completed_at = datetime.now(UTC)
-                db.commit()
-                continue
 
+            source_keys_seen: set[str] = set()
             for idx, row in enumerate(rows, start=2):
                 source_key = _source_row_key(selected.spreadsheet_id, tab_name, idx)
                 try:
@@ -569,21 +752,24 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                             row_number=idx,
                             message=f"Skipped incomplete row. Missing values: {', '.join(missing_row_fields)}",
                         )
+                        try:
+                            _mark_source_row_status(
+                                user_id=selected.user_id,
+                                spreadsheet_id=selected.spreadsheet_id,
+                                tab_name=tab_name,
+                                source_headers=source_headers,
+                                row_number=idx,
+                                status_value="SKIPPED",
+                                db=db,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                         continue
-                    payload_for_hash = {
-                        "name": source_values.get(source_name_col, ""),
-                        "color": source_values.get(source_color_col, ""),
-                        "jersey": source_values.get(source_jersey_col, ""),
-                        "position": source_values.get(source_position_col, ""),
-                        "game_details": source_values.get(source_game_details_col, ""),
-                        "video": source_values.get(source_link_col, ""),
-                        "type": source_values.get("Type of Video", ""),
-                        "user_id": source_values.get("User ID", ""),
-                        "user_email": source_values.get("User Email", ""),
-                        "timestamp": source_values.get("Timestamp", ""),
-                        "date": source_values.get("Date", ""),
-                    }
+                    source_business_values = _build_source_business_values(source_values, resolved_headers)
+                    payload_for_hash = _build_hash_payload(source_business_values)
                     digest = _row_hash(payload_for_hash)
+                    source_key = _business_row_key(selected.spreadsheet_id, tab_name, source_business_values)
+                    source_keys_seen.add(source_key)
 
                     state = (
                         db.query(SheetSyncRowState)
@@ -591,7 +777,7 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                             SheetSyncRowState.user_id == selected.user_id,
                             SheetSyncRowState.spreadsheet_id == selected.spreadsheet_id,
                             SheetSyncRowState.tab_name == tab_name,
-                            SheetSyncRowState.row_number == idx,
+                            SheetSyncRowState.source_row_key == source_key,
                         )
                         .one_or_none()
                     )
@@ -628,14 +814,16 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                     dest_row = _build_destination_row(
                         source_values={
                             **source_values,
-                            "First and Last name": source_values.get(source_name_col, ""),
-                            "Team color": source_values.get(source_color_col, ""),
-                            "Team Number": source_values.get(source_jersey_col, ""),
-                            "Position Played": source_values.get(source_position_col, ""),
-                            "Game Details - LOG IN INFO FOR THE SITE When you were subbed in or out": source_values.get(
-                                source_game_details_col, ""
+                            "First and Last name": source_business_values.get("name", ""),
+                            "Team color": source_business_values.get("color", ""),
+                            "Team Number": source_business_values.get("jersey", ""),
+                            "Position Played": source_business_values.get("position", ""),
+                            "Game Details - LOG IN INFO FOR THE SITE When you were subbed in or out": source_business_values.get(
+                                "game_details", ""
                             ),
-                            "Link to game": source_values.get(source_link_col, ""),
+                            "Link to game": source_business_values.get("video", ""),
+                            "Timestamp": source_business_values.get("timestamp", ""),
+                            "Date": source_business_values.get("date", ""),
                         },
                         source_row_key=source_key,
                         row_hash=digest,
@@ -688,7 +876,14 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         action=action,
                         status="SUCCESS",
                         message="Synced",
-                        payload_snapshot=payload_for_hash,
+                        payload_snapshot={
+                            "hash_payload": payload_for_hash,
+                            "changed_fields": _destination_field_changes(
+                                existing_row=existing_destination_row,
+                                destination_headers=destination_headers,
+                                new_row=dest_row,
+                            ),
+                        },
                         destination_response=resp,
                     )
                     _mark_source_row_status(
@@ -727,6 +922,54 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                     except Exception:  # noqa: BLE001
                         pass
 
+            if SYNC_RECONCILE_DESTINATION:
+                stale_keys = set(destination_index.keys()) - source_keys_seen
+                if stale_keys:
+                    stale_entries = sorted(
+                        [(key, destination_index[key]) for key in stale_keys],
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )
+                    info(
+                        "sync_destination_reconcile_detected_stale_rows",
+                        user_id=selected.user_id,
+                        spreadsheet_id=selected.spreadsheet_id,
+                        tab_name=run.tab_name,
+                        stale_rows=len(stale_entries),
+                    )
+                    try:
+                        delete_result = destination.delete_rows(
+                            [row_number for _, row_number in stale_entries],
+                            sheet_name=target_sheet_name,
+                        )
+                        for stale_key, row_number in stale_entries:
+                            _event(
+                                db=db,
+                                run_id=run.id,
+                                user_id=selected.user_id,
+                                spreadsheet_id=selected.spreadsheet_id,
+                                tab_name=tab_name,
+                                source_row_key=stale_key,
+                                row_number=row_number,
+                                action="RECONCILE_DELETE",
+                                status="SUCCESS",
+                                message="Deleted stale destination row.",
+                                destination_response=delete_result,
+                            )
+                    except Exception as reconcile_exc:  # noqa: BLE001
+                        run.rows_failed += len(stale_entries)
+                        _event(
+                            db=db,
+                            run_id=run.id,
+                            user_id=selected.user_id,
+                            spreadsheet_id=selected.spreadsheet_id,
+                            tab_name=tab_name,
+                            source_row_key=f"{selected.spreadsheet_id}:{tab_name}:stale:*",
+                            row_number=0,
+                            action="RECONCILE_DELETE",
+                            status="FAILED",
+                            message=f"Failed to delete stale destination rows: {reconcile_exc}",
+                        )
             run.status = "FAILED" if run.rows_failed > 0 else "SUCCESS"
             run.completed_at = datetime.now(UTC)
             db.commit()
@@ -761,5 +1004,7 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
             run.completed_at = datetime.now(UTC)
             db.commit()
             error("sheet_sync_run_failed", run_id=run.id, error=str(exc))
+        finally:
+            _release_user_lock(lock_client, lock_meta)
 
     return {"runs": run_count, "rows": total_rows_processed}

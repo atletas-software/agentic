@@ -5,6 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.admin import router as admin_router
+from app.api.routes.admin_auth import router as admin_auth_router
 from app.api.routes.google_integrations import router as google_integrations_router
 from app.api.routes.sync import router as sync_router
 from app.api.routes.ui import router as ui_router
@@ -77,6 +79,8 @@ async def on_shutdown() -> None:
 
 app.include_router(ui_router)
 app.include_router(auth_router)
+app.include_router(admin_auth_router)
+app.include_router(admin_router)
 app.include_router(workflow_router)
 app.include_router(google_integrations_router)
 app.include_router(sync_router)

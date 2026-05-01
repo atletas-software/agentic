@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
-from app.models.auth import AppSession, UserAccount
+from app.models.auth import AdminSession, AppSession, UserAccount
 
 # Use PBKDF2 to avoid bcrypt backend issues on Python 3.13
 # and bcrypt's 72-byte password limitation.
@@ -58,6 +58,31 @@ def create_user_session(user_id: int, db: Session) -> AppSession:
 
 def deactivate_session(session_id: str, db: Session) -> None:
     row = db.query(AppSession).filter(AppSession.session_id == session_id, AppSession.is_active.is_(True)).one_or_none()
+    if row is None:
+        return
+    row.is_active = False
+    db.commit()
+
+
+def create_admin_session(email: str, db: Session) -> AdminSession:
+    ttl_days = int(os.getenv("ADMIN_SESSION_TTL_DAYS", "7"))
+    now = datetime.now(UTC)
+    session = AdminSession(
+        email=email.lower().strip(),
+        session_id=secrets.token_urlsafe(48),
+        expires_at=now + timedelta(days=ttl_days),
+        is_active=True,
+        created_at=now,
+        last_seen_at=now,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def deactivate_admin_session(session_id: str, db: Session) -> None:
+    row = db.query(AdminSession).filter(AdminSession.session_id == session_id, AdminSession.is_active.is_(True)).one_or_none()
     if row is None:
         return
     row.is_active = False

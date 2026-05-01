@@ -14,7 +14,6 @@ class DestinationSheetService:
     def __init__(self) -> None:
         credentials_file = os.getenv("DESTINATION_GOOGLE_CREDENTIALS_FILE", "credentials.json")
         self._spreadsheet_id = os.getenv("DESTINATION_SPREADSHEET_ID", "")
-        self._user_sheet_prefix = os.getenv("DESTINATION_USER_SHEET_PREFIX", "user")
         self._enabled = bool(self._spreadsheet_id)
         if self._enabled:
             creds = service_account.Credentials.from_service_account_file(
@@ -28,18 +27,19 @@ class DestinationSheetService:
             "destination_sheet_service_config",
             enabled=self._enabled,
             spreadsheet_id_set=bool(self._spreadsheet_id),
-            destination_user_sheet_prefix=self._user_sheet_prefix,
         )
 
     def is_enabled(self) -> bool:
         return self._enabled and self._service is not None
 
-    def _normalize_user_segment(self, value: str) -> str:
-        sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", value).strip("_")
+    def _normalize_email_local_part(self, email: str) -> str:
+        local_part = (email or "").split("@", 1)[0].strip().lower()
+        # Keep only letters and numbers in the destination sheet title.
+        sanitized = re.sub(r"[^a-z0-9]+", "", local_part)
         return sanitized[:80] if sanitized else "anonymous"
 
-    def user_sheet_name(self, user_id: str) -> str:
-        return f"{self._user_sheet_prefix}_{self._normalize_user_segment(user_id)}"
+    def user_sheet_name(self, user_email: str) -> str:
+        return self._normalize_email_local_part(user_email)
 
     def _sheet_titles(self) -> list[str]:
         if not self.is_enabled():
@@ -50,6 +50,19 @@ class DestinationSheetService:
             for s in resp.get("sheets", [])
             if s.get("properties", {}).get("title")
         ]
+
+    def _sheet_id(self, sheet_name: str) -> int:
+        if not self.is_enabled():
+            raise RuntimeError("Destination sheet service is not enabled.")
+        resp = self._service.spreadsheets().get(
+            spreadsheetId=self._spreadsheet_id,
+            fields="sheets(properties(sheetId,title))",
+        ).execute()
+        for sheet in resp.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("title") == sheet_name and props.get("sheetId") is not None:
+                return int(props["sheetId"])
+        raise ValueError(f"Sheet '{sheet_name}' not found in destination spreadsheet.")
 
     def ensure_sheet_exists(self, sheet_name: str) -> None:
         if not self.is_enabled():
@@ -139,3 +152,31 @@ class DestinationSheetService:
             .execute()
         )
         return resp
+
+    def delete_rows(self, row_numbers: list[int], *, sheet_name: str) -> dict[str, Any]:
+        if not self.is_enabled():
+            return {"mode": "disabled", "deleted_rows": []}
+        if not row_numbers:
+            return {"deleted_rows": []}
+        sheet_id = self._sheet_id(sheet_name)
+        unique_desc_rows = sorted({row for row in row_numbers if row > 1}, reverse=True)
+        requests = [
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": row_number - 1,
+                        "endIndex": row_number,
+                    }
+                }
+            }
+            for row_number in unique_desc_rows
+        ]
+        if not requests:
+            return {"deleted_rows": []}
+        self._service.spreadsheets().batchUpdate(
+            spreadsheetId=self._spreadsheet_id,
+            body={"requests": requests},
+        ).execute()
+        return {"deleted_rows": unique_desc_rows}
