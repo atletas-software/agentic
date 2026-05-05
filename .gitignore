@@ -29,7 +29,10 @@ app.db
 # IDE/OS
 .DS_Store
 .idea/
-.vscode/
 
 # Docker overrides
 docker-compose.override.yml
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore

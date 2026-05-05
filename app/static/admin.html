@@ -20,6 +20,26 @@
       .pill { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
       .ok { background: #dcfce7; color: #166534; }
       .bad { background: #fee2e2; color: #991b1b; }
+      .sync-cell { display: grid; gap: 8px; justify-items: start; }
+      .sync-toggle-btn {
+        min-width: 116px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.1;
+        white-space: nowrap;
+      }
+      .sync-toggle-btn.enable {
+        background: #ecfdf5;
+        border-color: #86efac;
+        color: #166534;
+      }
+      .sync-toggle-btn.disable {
+        background: #fef2f2;
+        border-color: #fecaca;
+        color: #991b1b;
+      }
       .table-wrap { overflow-x: auto; }
       .raw-logs { min-width: 320px; }
       .raw-log-group { font-size: 12px; margin-bottom: 8px; }
@@ -202,9 +222,9 @@
             <td><strong>${u.email}</strong><div class="muted">${u.user_id}</div></td>
             <td>${u.selected_sheet ? `${u.selected_sheet.spreadsheet_name}<div class="muted">${u.selected_sheet.spreadsheet_id}</div>` : '<span class="muted">None</span>'}</td>
             <td>
-              <div>${u.sync_enabled ? '<span class="pill ok">Enabled</span>' : '<span class="pill bad">Disabled</span>'}</div>
-              <div style="margin-top:6px;">
-                <button data-sync-toggle-user="${u.user_id}" data-sync-toggle-email="${u.email}" data-sync-enabled="${u.sync_enabled ? "1" : "0"}">
+              <div class="sync-cell">
+                <div>${u.sync_enabled ? '<span class="pill ok">Enabled</span>' : '<span class="pill bad">Disabled</span>'}</div>
+                <button class="sync-toggle-btn ${u.sync_enabled ? "disable" : "enable"}" data-sync-toggle-user="${u.user_id}" data-sync-toggle-email="${u.email}" data-sync-enabled="${u.sync_enabled ? "1" : "0"}">
                   ${u.sync_enabled ? "Disable Sync" : "Enable Sync"}
                 </button>
               </div>
