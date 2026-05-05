@@ -21,7 +21,7 @@ from app.models.google_oauth import (
 from app.models.auth import UserAccount
 from app.services.destination_sheet import DestinationSheetService
 from app.services.google_integration import resolve_polling_interval_seconds
-from app.services.google_sheets import read_sheet, update_sheet
+from app.services.google_sheets import read_sheet
 from app.services.sync_backoff import is_user_blocked
 
 REQUIRED_SOURCE_HEADERS = [
@@ -64,7 +64,6 @@ DESTINATION_HEADERS = [
 ]
 
 REQUIRED_DESTINATION_SYNC_HEADERS = SYNC_DESTINATION_HEADERS
-SOURCE_SYNC_STATUS_HEADER = "sync_status"
 
 SOURCE_HEADER_ALIASES: dict[str, tuple[str, ...]] = {
     "First and Last name": (
@@ -298,84 +297,6 @@ def _row_hash(payload: dict[str, str]) -> str:
 
 def _source_row_key(spreadsheet_id: str, tab_name: str, row_number: int) -> str:
     return f"{spreadsheet_id}:{tab_name}:{row_number}"
-
-
-def _column_letter(col_idx_1based: int) -> str:
-    result = ""
-    n = col_idx_1based
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
-
-
-def _ensure_sync_status_column(
-    *,
-    user_id: str,
-    spreadsheet_id: str,
-    tab_name: str,
-    source_headers: list[str],
-    db: Session,
-) -> int:
-    if SOURCE_SYNC_STATUS_HEADER in source_headers:
-        return source_headers.index(SOURCE_SYNC_STATUS_HEADER) + 1
-    updated_headers = [*source_headers, SOURCE_SYNC_STATUS_HEADER]
-    update_sheet(
-        user_id=user_id,
-        spreadsheet_id=spreadsheet_id,
-        range_name=f"{tab_name}!A1",
-        values=[updated_headers],
-        db=db,
-    )
-    source_headers.append(SOURCE_SYNC_STATUS_HEADER)
-    return len(source_headers)
-
-
-def _mark_source_row_failed(
-    *,
-    user_id: str,
-    spreadsheet_id: str,
-    tab_name: str,
-    source_headers: list[str],
-    row_number: int,
-    db: Session,
-) -> None:
-    _mark_source_row_status(
-        user_id=user_id,
-        spreadsheet_id=spreadsheet_id,
-        tab_name=tab_name,
-        source_headers=source_headers,
-        row_number=row_number,
-        status_value="FAILED",
-        db=db,
-    )
-
-
-def _mark_source_row_status(
-    *,
-    user_id: str,
-    spreadsheet_id: str,
-    tab_name: str,
-    source_headers: list[str],
-    row_number: int,
-    status_value: str,
-    db: Session,
-) -> None:
-    col_index = _ensure_sync_status_column(
-        user_id=user_id,
-        spreadsheet_id=spreadsheet_id,
-        tab_name=tab_name,
-        source_headers=source_headers,
-        db=db,
-    )
-    cell = f"{tab_name}!{_column_letter(col_index)}{row_number}"
-    update_sheet(
-        user_id=user_id,
-        spreadsheet_id=spreadsheet_id,
-        range_name=cell,
-        values=[[status_value]],
-        db=db,
-    )
 
 
 def _build_destination_row(
@@ -752,18 +673,6 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                             row_number=idx,
                             message=f"Skipped incomplete row. Missing values: {', '.join(missing_row_fields)}",
                         )
-                        try:
-                            _mark_source_row_status(
-                                user_id=selected.user_id,
-                                spreadsheet_id=selected.spreadsheet_id,
-                                tab_name=tab_name,
-                                source_headers=source_headers,
-                                row_number=idx,
-                                status_value="SKIPPED",
-                                db=db,
-                            )
-                        except Exception:  # noqa: BLE001
-                            pass
                         continue
                     source_business_values = _build_source_business_values(source_values, resolved_headers)
                     payload_for_hash = _build_hash_payload(source_business_values)
@@ -795,15 +704,6 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                             action="NO_CHANGE",
                             status="SUCCESS",
                             message="No change",
-                        )
-                        _mark_source_row_status(
-                            user_id=selected.user_id,
-                            spreadsheet_id=selected.spreadsheet_id,
-                            tab_name=tab_name,
-                            source_headers=source_headers,
-                            row_number=idx,
-                            status_value="SUCCESS",
-                            db=db,
                         )
                         continue
 
@@ -886,15 +786,6 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         },
                         destination_response=resp,
                     )
-                    _mark_source_row_status(
-                        user_id=selected.user_id,
-                        spreadsheet_id=selected.spreadsheet_id,
-                        tab_name=tab_name,
-                        source_headers=source_headers,
-                        row_number=idx,
-                        status_value="SUCCESS",
-                        db=db,
-                    )
                     total_rows_processed += 1
                 except Exception as row_exc:  # noqa: BLE001
                     run.rows_failed += 1
@@ -910,17 +801,6 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
                         status="FAILED",
                         message=str(row_exc),
                     )
-                    try:
-                        _mark_source_row_failed(
-                            user_id=selected.user_id,
-                            spreadsheet_id=selected.spreadsheet_id,
-                            tab_name=tab_name,
-                            source_headers=source_headers,
-                            row_number=idx,
-                            db=db,
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
 
             if SYNC_RECONCILE_DESTINATION:
                 stale_keys = set(destination_index.keys()) - source_keys_seen
@@ -976,19 +856,6 @@ def run_sync_once_for_users(db: Session, user_ids: list[str]) -> dict[str, int]:
         except Exception as exc:  # noqa: BLE001
             run.status = "FAILED"
             run.error_message = str(exc)
-            if "tab_name" in locals() and "source_headers" in locals() and "rows" in locals():
-                for idx in range(2, len(rows) + 2):
-                    try:
-                        _mark_source_row_failed(
-                            user_id=selected.user_id,
-                            spreadsheet_id=selected.spreadsheet_id,
-                            tab_name=tab_name,
-                            source_headers=source_headers,
-                            row_number=idx,
-                            db=db,
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
             _event(
                 db=db,
                 run_id=run.id,

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.dependencies.auth import get_admin_session_context
 from app.models.auth import UserAccount
 from app.models.google_oauth import GoogleOAuthToken, SheetSyncEvent, SheetSyncRun, UserGoogleSheetSelection, UserSyncSetting
+from app.services.google_integration import set_user_sync_settings
 
 router = APIRouter(prefix="/admin-api", tags=["admin"])
+
+
+class AdminUserSyncToggleRequest(BaseModel):
+    sync_enabled: bool
 
 
 @router.get("/users")
@@ -120,6 +126,42 @@ async def admin_users(
     total = len(data)
     paged = data[offset : offset + limit]
     return {"users": paged, "pagination": {"total": total, "offset": offset, "limit": limit}}
+
+
+@router.post("/users/{user_id}/sync")
+async def admin_set_user_sync(
+    user_id: str,
+    request: AdminUserSyncToggleRequest,
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        user_id_int = int(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user id.") from exc
+
+    user = db.query(UserAccount).filter(UserAccount.id == user_id_int).one_or_none()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    if request.sync_enabled:
+        selected = db.query(UserGoogleSheetSelection).filter(UserGoogleSheetSelection.user_id == user_id).one_or_none()
+        if selected is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot enable sync because no source sheet is selected for this user.",
+            )
+    row = set_user_sync_settings(
+        user_id=user_id,
+        polling_interval_minutes=None,
+        sync_enabled=request.sync_enabled,
+        db=db,
+    )
+    return {
+        "success": True,
+        "user_id": user_id,
+        "sync_enabled": bool(row.sync_enabled),
+    }
 
 
 @router.get("/users/{user_id}/runs")
