@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Video Feedback Review",
+  "type": "object",
+  "required": [
+    "video_summary",
+    "overall_assessment",
+    "moments"
+  ],
+  "properties": {
+    "video_summary": {
+      "type": "object",
+      "required": [
+        "sport",
+        "player_focus",
+        "duration_sec",
+        "analysis_scope"
+      ],
+      "properties": {
+        "sport": {
+          "type": "string"
+        },
+        "player_focus": {
+          "type": "string"
+        },
+        "duration_sec": {
+          "type": "number"
+        },
+        "analysis_scope": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "overall_assessment": {
+      "type": "object",
+      "required": [
+        "strengths",
+        "improvements",
+        "next_focus"
+      ],
+      "properties": {
+        "strengths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "improvements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "next_focus": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "moments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "timestamp_sec",
+          "category",
+          "coaching_note"
+        ],
+        "properties": {
+          "timestamp_sec": {
+            "type": "number"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "scanning",
+              "body_shape",
+              "positioning",
+              "movement",
+              "first_touch",
+              "passing",
+              "pressing",
+              "transition",
+              "communication",
+              "duel",
+              "decision_making",
+              "finishing",
+              "defending"
+            ]
+          },
+          "sentiment": {
+            "type": "string",
+            "enum": [
+              "positive",
+              "corrective",
+              "mixed"
+            ]
+          },
+          "coaching_note": {
+            "type": "string"
+          },
+          "reference_clip": {
+            "type": "object",
+            "required": [
+              "title",
+              "teaching_point"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "teaching_point": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "diagram_request": {
+            "type": "object",
+            "required": [
+              "title",
+              "prompt"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "freeze_frame_request": {
+            "type": "object",
+            "required": [
+              "title",
+              "reason"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

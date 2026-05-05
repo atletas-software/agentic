@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Calibrate Player</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+    <style>
+      body { background: linear-gradient(160deg, #f4efe6, #dae7f1); min-height: 100vh; }
+      main { max-width: 1100px; }
+      .panel { background: rgba(255,255,255,.93); border-radius: 18px; padding: 1rem; box-shadow: 0 20px 40px rgba(15,23,42,.08); }
+      .frame-wrap { position: relative; display: inline-block; max-width: 100%; cursor: crosshair; user-select: none; -webkit-user-select: none; }
+      .frame-wrap img { max-width: 100%; display: block; border-radius: 12px; user-select: none; -webkit-user-drag: none; }
+      .selection {
+        position: absolute;
+        border: 3px solid #ef4444;
+        background: rgba(239, 68, 68, .12);
+        pointer-events: none;
+        display: none;
+      }
+      .row { display: grid; grid-template-columns: 1fr 320px; gap: 1rem; }
+      @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Calibrate Player Selection</h1>
+      <p>Select the player once on a clear frame. Marker screenshots will then use that saved reference instead of guessing.</p>
+      <div class="row">
+        <section class="panel">
+          <form method="get">
+            <label>Calibration timestamp (seconds)
+              <input type="number" name="ts" value="{{ timestamp_sec }}" step="0.01" min="0">
+            </label>
+            <button type="submit">Load frame</button>
+          </form>
+          <div class="frame-wrap" id="frame-wrap">
+            <img id="frame-image" src="/api/reviews/{{ review.id }}/calibration-frame?ts={{ timestamp_sec }}" alt="Calibration frame" draggable="false">
+            <div class="selection" id="selection-box"></div>
+          </div>
+        </section>
+        <aside class="panel">
+          <h3>How to use</h3>
+          <p>Drag a box tightly around the player you want analyzed.</p>
+          <p>The saved box becomes the visual reference for marker frames later in the review.</p>
+          <button id="save-btn" type="button" disabled>Save player selection</button>
+          <p id="status"></p>
+          <p><a href="/review/{{ review.id }}">Back to review</a></p>
+        </aside>
+      </div>
+    </main>
+    <script>
+      const reviewId = {{ review.id | tojson }};
+      const timestampSec = Number({{ timestamp_sec | tojson }});
+      const wrap = document.getElementById("frame-wrap");
+      const img = document.getElementById("frame-image");
+      const box = document.getElementById("selection-box");
+      const saveBtn = document.getElementById("save-btn");
+      const status = document.getElementById("status");
+
+      let drawing = false;
+      let startX = 0;
+      let startY = 0;
+      let current = null;
+
+      function pointerPosition(event) {
+        const rect = wrap.getBoundingClientRect();
+        const clientX = event.clientX ?? (event.touches && event.touches[0] ? event.touches[0].clientX : 0);
+        const clientY = event.clientY ?? (event.touches && event.touches[0] ? event.touches[0].clientY : 0);
+        const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+        const y = Math.max(0, Math.min(clientY - rect.top, rect.height));
+        return { x, y, rect };
+      }
+
+      function renderSelection(selection) {
+        box.style.display = "block";
+        box.style.left = `${selection.x}px`;
+        box.style.top = `${selection.y}px`;
+        box.style.width = `${selection.width}px`;
+        box.style.height = `${selection.height}px`;
+      }
+
+      function beginSelection(event) {
+        event.preventDefault();
+        const p = pointerPosition(event);
+        drawing = true;
+        startX = p.x;
+        startY = p.y;
+        current = { x: p.x, y: p.y, width: 0, height: 0 };
+        renderSelection(current);
+      }
+
+      function updateSelection(event) {
+        if (!drawing) return;
+        event.preventDefault();
+        const p = pointerPosition(event);
+        const x = Math.min(startX, p.x);
+        const y = Math.min(startY, p.y);
+        const width = Math.abs(p.x - startX);
+        const height = Math.abs(p.y - startY);
+        current = { x, y, width, height };
+        renderSelection(current);
+      }
+
+      function endSelection(event) {
+        if (!drawing) return;
+        if (event) event.preventDefault();
+        drawing = false;
+        if (current && current.width > 10 && current.height > 10) {
+          renderSelection(current);
+          saveBtn.disabled = false;
+          status.textContent = "Selection ready. Save it to use this player as the review reference.";
+        } else {
+          box.style.display = "none";
+          current = null;
+        }
+      }
+
+      wrap.addEventListener("mousedown", beginSelection);
+      window.addEventListener("mousemove", updateSelection);
+      window.addEventListener("mouseup", endSelection);
+      wrap.addEventListener("touchstart", beginSelection, { passive: false });
+      window.addEventListener("touchmove", updateSelection, { passive: false });
+      window.addEventListener("touchend", endSelection, { passive: false });
+
+      saveBtn.addEventListener("click", async () => {
+        if (!current) return;
+        const rect = wrap.getBoundingClientRect();
+        const payload = {
+          timestamp_sec: timestampSec,
+          bbox: {
+            x: current.x / rect.width,
+            y: current.y / rect.height,
+            width: current.width / rect.width,
+            height: current.height / rect.height,
+          }
+        };
+        status.textContent = "Saving calibration...";
+        const response = await fetch(`/api/reviews/${reviewId}/calibration`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          status.textContent = data.error || "Unable to save calibration.";
+          return;
+        }
+        status.textContent = "Calibration saved. Go back to the review and click a marker again.";
+      });
+    </script>
+  </body>
+</html>

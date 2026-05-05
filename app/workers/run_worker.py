@@ -4,7 +4,7 @@ import platform
 
 from rq import Connection, Worker
 
-from app.services.sync_queue import SYNC_QUEUE_NAME, get_redis
+from app.services.sync_queue import SYNC_QUEUE_NAME, WORKSPACE_QUEUE_NAME, get_redis
 
 
 def main() -> None:
@@ -17,7 +17,7 @@ def main() -> None:
             from rq import SimpleWorker
 
             worker_class = SimpleWorker
-        worker = worker_class([SYNC_QUEUE_NAME])
+        worker = worker_class([SYNC_QUEUE_NAME, WORKSPACE_QUEUE_NAME])
         worker.work(with_scheduler=False)
 
 

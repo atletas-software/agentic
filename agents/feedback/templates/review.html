@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Feedback Agent - {{ review.title }}</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+    <style>
+      :root {
+        --positive: #1f8f57;
+        --corrective: #b55c14;
+        --mixed: #2459a6;
+        --ink: #0f172a;
+        --ink-soft: #1e293b;
+        --muted: #475569;
+        --muted-faint: #64748b;
+        --panel: rgba(255, 255, 255, 0.97);
+        --rail-bg: #f1f5f9;
+        --rail-border: #e2e8f0;
+        --accent: #0f2744;
+        --accent-hover: #1e3a5f;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; overflow: hidden; }
+      body { margin: 0; background: linear-gradient(160deg, #f4efe6, #dae7f1); color: var(--ink); }
+      button, input, textarea { margin: 0; }
+      .workspace {
+        width: 100vw;
+        height: 100vh;
+        max-width: none;
+        padding: .65rem;
+        display: grid;
+        grid-template-rows: min-content minmax(0, 1fr);
+        gap: .65rem;
+      }
+      .workspace-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem 1.25rem;
+        flex-wrap: wrap;
+        padding: 1rem 1.15rem 1rem 1.25rem;
+        border-radius: 16px;
+        background: var(--panel);
+        border: 1px solid var(--rail-border);
+        box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.06), 0 10px 24px -8px rgba(15, 23, 42, 0.12);
+        position: relative;
+      }
+      .workspace-header::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 12px;
+        bottom: 12px;
+        width: 4px;
+        border-radius: 0 4px 4px 0;
+        background: linear-gradient(180deg, #1e40af, #0f2744);
+      }
+      .workspace-title {
+        min-width: 0;
+        flex: 1 1 14rem;
+        max-width: 100%;
+        padding-left: 0.35rem;
+      }
+      .workspace-title h1 {
+        margin: 0;
+        font-size: 1.2rem;
+        line-height: 1.25;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--ink);
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .workspace-title p {
+        margin: .5rem 0 0;
+        color: var(--ink-soft);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        font-weight: 500;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        max-height: 6.5rem;
+        overflow-y: auto;
+        padding: .45rem .5rem;
+        padding-right: .35rem;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #e8eef4;
+      }
+      .agent-badge {
+        flex-shrink: 0;
+        border-radius: 10px;
+        padding: .5rem 1rem;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 700;
+        font-size: 0.8125rem;
+        letter-spacing: 0.02em;
+        white-space: nowrap;
+        align-self: flex-start;
+        margin-top: 0.1rem;
+        box-shadow: 0 2px 4px rgba(15, 23, 42, 0.15);
+      }
+      .agent-shell {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr) minmax(300px, 420px);
+        gap: .65rem;
+      }
+      .agent-rail,
+      .video-panel,
+      .agent-panel {
+        min-height: 0;
+        border-radius: 16px;
+        background: var(--panel);
+        border: 1px solid var(--rail-border);
+        box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 12px 28px -10px rgba(15, 23, 42, 0.1);
+      }
+      .agent-rail {
+        padding: 0.85rem 0.65rem;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.65rem;
+        background: linear-gradient(180deg, #f8fafc 0%, var(--rail-bg) 100%);
+      }
+      .rail-title {
+        font-size: 0.6875rem;
+        font-weight: 800;
+        color: var(--muted);
+        text-align: center;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        margin: 0 0 0.15rem;
+        padding: 0 0.2rem;
+        line-height: 1.3;
+      }
+      .agent-tab {
+        border-radius: 12px;
+        padding: 0.65rem 0.45rem;
+        text-align: center;
+        background: #fff;
+        color: var(--ink-soft);
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1.25;
+        border: 1px solid #dce3ec;
+        cursor: default;
+        transition: border-color 0.15s, box-shadow 0.15s, color 0.15s;
+      }
+      .agent-tab.active {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+        box-shadow: 0 2px 8px rgba(15, 39, 68, 0.35);
+      }
+      .agent-tab.disabled {
+        opacity: 0.72;
+        color: var(--muted-faint);
+        background: #f1f5f9;
+        border-color: #e2e8f0;
+      }
+      .video-panel { padding: .65rem; display: grid; grid-template-rows: minmax(0, 1fr) 28px 18px; gap: .45rem; }
+      .player-stage { position: relative; min-height: 0; }
+      video { width: 100%; height: 100%; max-height: calc(100vh - 126px); object-fit: contain; border-radius: 14px; background: #000; display: block; }
+      .bbox-layer {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 54px;
+        cursor: crosshair;
+        border-radius: 14px 14px 0 0;
+      }
+      .bbox-layer.disabled { pointer-events: none; cursor: default; }
+      .bbox-selection {
+        position: absolute;
+        display: none;
+        border: 3px solid #ef4444;
+        background: rgba(239, 68, 68, .12);
+        pointer-events: none;
+      }
+      .timeline { position: relative; height: 10px; background: #d8e2ea; border-radius: 999px; margin-top: .35rem; }
+      .marker-dot {
+        position: absolute;
+        top: -9px;
+        width: 2px;
+        max-width: 2px;
+        min-width: 2px;
+        height: 28px;
+        border-radius: 0;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        transform: translateX(-50%);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, .95), 0 1px 3px rgba(15, 23, 42, .35);
+      }
+      .marker-dot::before {
+        content: "";
+        position: absolute;
+        left: -8px;
+        top: -5px;
+        width: 18px;
+        height: 38px;
+      }
+      .marker-dot:hover,
+      .marker-dot:focus { width: 2px; max-width: 2px; min-width: 2px; outline: 2px solid rgba(16, 42, 67, .3); outline-offset: 4px; }
+      .positive { background: var(--positive); }
+      .corrective { background: var(--corrective); }
+      .mixed { background: var(--mixed); }
+      .small { color: var(--muted); font-size: .78rem; line-height: 1.25; }
+      .agent-panel {
+        padding: .75rem;
+        display: grid;
+        grid-template-rows: min-content minmax(220px, min(52vh, 440px)) min-content min-content;
+        gap: .6rem;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .panel-heading h2 { margin: 0; font-size: 1rem; }
+      .panel-heading p { margin: .12rem 0 0; color: var(--muted); font-size: .78rem; }
+      .detail-panel {
+        min-height: 0;
+        height: 100%;
+        max-height: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-radius: 15px;
+        padding: 0.85rem 0.85rem 1rem;
+        background: #f7fafc;
+        border: 1px solid #dde6ee;
+      }
+      .detail-panel.hidden { display: block; }
+      .detail-top {
+        display: flex;
+        justify-content: space-between;
+        gap: .6rem;
+        align-items: flex-start;
+        flex-shrink: 0;
+      }
+      .detail-top > div:first-child { min-width: 0; flex: 1; }
+      .detail-title {
+        margin: 0 0 .2rem;
+        font-size: .95rem;
+        font-weight: 800;
+        color: var(--ink);
+        overflow-wrap: anywhere;
+      }
+      /* Scroll note + meta + focus frame together — avoids clipping bottom (calibration / image status). */
+      .detail-scroll {
+        flex: 1 1 auto;
+        min-height: 5.5rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+        display: flex;
+        flex-direction: column;
+        gap: .5rem;
+        margin-top: .35rem;
+        padding: 0.15rem 0.25rem 1rem 0;
+      }
+      .detail-note {
+        margin: 0;
+        color: #1f2937;
+        font-size: .9rem;
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        padding-bottom: 0.25rem;
+      }
+      .detail-meta { color: var(--muted); font-size: .75rem; line-height: 1.35; overflow-wrap: anywhere; }
+      .focus-box { margin-top: 0; flex-shrink: 0; }
+      .focus-box.hidden { display: none; }
+      .focus-box img {
+        width: 100%;
+        max-height: 210px;
+        object-fit: contain;
+        border-radius: 12px;
+        border: 1px solid #dde6ee;
+        background: #eef3f8;
+      }
+      .close-btn {
+        flex-shrink: 0;
+        border: 0;
+        background: #e7eef5;
+        color: #203040;
+        border-radius: 999px;
+        width: 1.65rem;
+        height: 1.65rem;
+        cursor: pointer;
+        padding: 0;
+      }
+      .agent-form {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: .45rem;
+        min-width: 0;
+      }
+      .agent-form label { margin: 0; font-size: .78rem; font-weight: 700; color: #344054; }
+      .agent-form input,
+      .agent-form textarea {
+        height: 2.25rem;
+        min-height: 2.25rem;
+        padding: .42rem .55rem;
+        font-size: .84rem;
+        background: #fff !important;
+        color: var(--ink) !important;
+        border: 1px solid #c8d4e0 !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+      }
+      .agent-form textarea {
+        height: 3.2rem;
+        min-height: 3.2rem;
+        resize: vertical;
+        line-height: 1.4;
+      }
+      .manual-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .5rem;
+        align-items: stretch;
+      }
+      .manual-toolbar button {
+        flex: 1 1 calc(50% - .25rem);
+        min-width: 8.5rem;
+        padding: .55rem .65rem;
+        font-size: .86rem;
+        border-radius: 10px;
+      }
+      .manual-toolbar .wide { flex: 1 1 100%; min-width: 100%; }
+      .danger-btn { background: #b42318 !important; border-color: #b42318 !important; color: #fff !important; }
+      .share-block { margin-top: .45rem; display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+      .share-row { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+      .share-row input {
+        min-width: 0;
+        width: 100%;
+        height: 2.15rem;
+        font-size: .78rem;
+        background: #fff !important;
+        color: var(--ink) !important;
+        border: 1px solid #c8d4e0 !important;
+        border-radius: 10px !important;
+      }
+      .share-row .share-hint { font-size: .72rem; color: var(--muted); line-height: 1.35; }
+      .marker-list { display: none; }
+      .detail-extra-line { overflow-wrap: anywhere; word-break: break-word; margin-top: .35rem; }
+      @media (max-width: 1050px) {
+        html, body { overflow: auto; }
+        .workspace { height: auto; min-height: 100vh; }
+        .agent-shell { grid-template-columns: 1fr; }
+        .agent-rail {
+          flex-direction: row;
+          flex-wrap: wrap;
+          justify-content: center;
+          align-items: stretch;
+          gap: 0.5rem;
+          padding: 0.75rem;
+        }
+        .rail-title {
+          flex: 1 0 100%;
+          width: 100%;
+          margin-bottom: 0.25rem;
+        }
+        .agent-tab { flex: 1 1 28%; min-width: 5.5rem; }
+        video { height: auto; max-height: 56vh; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="workspace-title">
+          <h1>{{ review.title }}</h1>
+          <p>{{ review.video_summary.analysis_scope }}</p>
+        </div>
+        <div class="agent-badge">Feedback Agent</div>
+      </header>
+      <div class="agent-shell">
+        <aside class="agent-rail">
+          <div class="rail-title">Agents</div>
+          <div class="agent-tab active">Feedback</div>
+          <div class="agent-tab disabled">Training</div>
+          <div class="agent-tab disabled">Recruiting</div>
+        </aside>
+        <section class="video-panel">
+          <div class="player-stage" id="player-stage">
+            <video id="player" controls preload="metadata" playsinline>
+              <source src="{{ review.video_url }}" type="video/mp4">
+            </video>
+            <div class="bbox-layer disabled" id="bbox-layer">
+              <div class="bbox-selection" id="bbox-selection"></div>
+            </div>
+          </div>
+          <div class="timeline" id="timeline"></div>
+          <div class="small" id="video-status">Click a marker stick to open feedback, or pause and draw a player box.</div>
+        </section>
+        <aside class="agent-panel">
+          <div class="panel-heading">
+            <h2>Feedback Agent</h2>
+            <p>Player-specific marker feedback from the previous 2 seconds.</p>
+          </div>
+          <div class="detail-panel" id="marker-detail">
+            <div class="detail-top">
+              <div>
+                <h4 class="detail-title" id="detail-title">No marker selected</h4>
+                <div class="detail-meta" id="detail-meta">Click a marker stick to view feedback here.</div>
+              </div>
+              <button class="close-btn" id="detail-close" type="button">x</button>
+            </div>
+            <div class="detail-scroll">
+              <p class="detail-note" id="detail-note"></p>
+              <div class="detail-meta detail-extra-line" id="detail-extra"></div>
+              <div class="focus-box hidden" id="focus-box">
+                <div class="detail-meta" id="focus-status">Selected player frame.</div>
+                <img id="focus-image" alt="Focused marker frame">
+              </div>
+            </div>
+          </div>
+          <div class="agent-form">
+            <label for="player-name">Player name</label>
+            <input id="player-name" type="text" value="{{ review.video_summary.player_focus or '' }}" placeholder="Example: Gleb">
+            <label for="feedback-prompt">Optional focus</label>
+            <textarea id="feedback-prompt" placeholder="Example: body shape, scanning, first touch, defensive position"></textarea>
+            <div class="small" id="manual-status">Pause the video, draw a box, then click Feedback.</div>
+          </div>
+          <div>
+            <div class="manual-toolbar">
+              <button id="feedback-btn" type="button" disabled>Feedback</button>
+              <button id="clear-selection-btn" type="button" class="secondary" disabled>Clear box</button>
+              <button id="remove-markers-btn" type="button" class="danger-btn">Remove markers</button>
+              <button id="share-btn" type="button" class="secondary">Share link</button>
+            </div>
+            <div class="share-block">
+              <div class="share-row">
+                <input id="share-url" type="text" readonly value="{{ share_url or '' }}" placeholder="Share URL appears here after you click Share link" aria-label="Share URL">
+                <span class="share-hint" id="share-status">Hidden from player: edit tools.</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+        <div id="marker-list" class="marker-list"></div>
+      </div>
+    </main>
+    <script>
+      const review = {{ review | tojson }};
+      const player = document.getElementById("player");
+      const timeline = document.getElementById("timeline");
+      const bboxLayer = document.getElementById("bbox-layer");
+      const bboxSelection = document.getElementById("bbox-selection");
+      const feedbackBtn = document.getElementById("feedback-btn");
+      const feedbackPrompt = document.getElementById("feedback-prompt");
+      const playerNameInput = document.getElementById("player-name");
+      const clearSelectionBtn = document.getElementById("clear-selection-btn");
+      const removeMarkersBtn = document.getElementById("remove-markers-btn");
+      const manualStatus = document.getElementById("manual-status");
+      const shareBtn = document.getElementById("share-btn");
+      const shareUrl = document.getElementById("share-url");
+      const shareStatus = document.getElementById("share-status");
+      const markerList = document.getElementById("marker-list");
+      const detailPanel = document.getElementById("marker-detail");
+      const detailTitle = document.getElementById("detail-title");
+      const detailMeta = document.getElementById("detail-meta");
+      const detailNote = document.getElementById("detail-note");
+      const detailExtra = document.getElementById("detail-extra");
+      const detailClose = document.getElementById("detail-close");
+      const focusBox = document.getElementById("focus-box");
+      const focusStatus = document.getElementById("focus-status");
+      const focusImage = document.getElementById("focus-image");
+      const videoStatus = document.getElementById("video-status");
+      const duration = review.duration_sec || 1;
+      let markers = (review.markers || []).map((marker) => ({
+        ...marker,
+        timestamp_sec: Math.max(0, Math.min(Number(marker.timestamp_sec || 0), Math.max(duration - 0.25, 0)))
+      }));
+      let drawing = false;
+      let startX = 0;
+      let startY = 0;
+      let currentBox = null;
+
+      function formatTime(totalSeconds) {
+        const sec = Math.max(0, Math.floor(totalSeconds));
+        const minutes = Math.floor(sec / 60);
+        const seconds = sec % 60;
+        return `${minutes}:${String(seconds).padStart(2, "0")}`;
+      }
+
+      async function showDetail(marker) {
+        detailTitle.textContent = marker.label;
+        const actionType = (marker.action_type || "other").replaceAll("_", " ");
+        detailMeta.textContent = `${formatTime(marker.timestamp_sec)} | ${actionType} | ${marker.category} | ${marker.sentiment}`;
+        detailNote.textContent = marker.coaching_note || "";
+        const extra = [];
+        if (marker.manual_context_sec !== undefined) extra.push(`Context: ${formatTime(marker.manual_context_sec)}-${formatTime(marker.timestamp_sec)}`);
+        if (marker.player_name) extra.push(`Player: ${marker.player_name}`);
+        if (marker.feedback_prompt) extra.push(`Focus: ${marker.feedback_prompt}`);
+        detailExtra.textContent = extra.join(" | ");
+        focusBox.classList.remove("hidden");
+        focusImage.removeAttribute("src");
+        if (marker.manual_image_url) {
+          focusStatus.textContent = "Selected player frame.";
+          focusImage.src = marker.manual_image_url;
+          return;
+        }
+        focusStatus.textContent = "Generating focused freeze-frame...";
+        try {
+          const response = await fetch(`/api/reviews/${review.id}/markers/${marker.id}/focus-frame`);
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Unable to generate focus frame.");
+          }
+          focusStatus.textContent = `Player highlight confidence: ${data.confidence}. ${data.note || ""}`;
+          focusImage.src = data.image_url;
+        } catch (error) {
+          focusStatus.textContent = error.message || "Unable to generate focused freeze-frame.";
+        }
+      }
+
+      async function jumpToMarker(marker) {
+        await showDetail(marker);
+        const targetTime = Math.max(0, Math.min(marker.timestamp_sec, Math.max(duration - 0.25, 0)));
+        if (player.readyState < 1) {
+          player.load();
+        }
+        player.pause();
+        player.currentTime = targetTime;
+        videoStatus.textContent = `Paused at ${formatTime(targetTime)}.`;
+      }
+
+      function renderMarkers() {
+        timeline.innerHTML = "";
+        markerList.innerHTML = "";
+        markers.forEach((marker) => {
+          const dot = document.createElement("button");
+          dot.className = `marker-dot ${marker.sentiment}`;
+          dot.style.left = `${(marker.timestamp_sec / duration) * 100}%`;
+          dot.title = `${marker.label} @ ${marker.timestamp_sec}s`;
+          dot.type = "button";
+          dot.addEventListener("click", () => jumpToMarker(marker));
+          timeline.appendChild(dot);
+        });
+      }
+
+      function pointFromEvent(event) {
+        const rect = bboxLayer.getBoundingClientRect();
+        const x = Math.max(0, Math.min(event.clientX - rect.left, rect.width));
+        const y = Math.max(0, Math.min(event.clientY - rect.top, rect.height));
+        return { x, y };
+      }
+
+      function renderBox(box) {
+        bboxSelection.style.display = "block";
+        bboxSelection.style.left = `${box.x}px`;
+        bboxSelection.style.top = `${box.y}px`;
+        bboxSelection.style.width = `${box.width}px`;
+        bboxSelection.style.height = `${box.height}px`;
+      }
+
+      function clearBox() {
+        currentBox = null;
+        bboxSelection.style.display = "none";
+        feedbackBtn.disabled = true;
+        clearSelectionBtn.disabled = true;
+      }
+
+      bboxLayer.addEventListener("mousedown", (event) => {
+        if (!player.paused) return;
+        event.preventDefault();
+        const p = pointFromEvent(event);
+        drawing = true;
+        startX = p.x;
+        startY = p.y;
+        currentBox = { x: p.x, y: p.y, width: 0, height: 0 };
+        renderBox(currentBox);
+      });
+
+      window.addEventListener("mousemove", (event) => {
+        if (!drawing) return;
+        event.preventDefault();
+        const p = pointFromEvent(event);
+        currentBox = {
+          x: Math.min(startX, p.x),
+          y: Math.min(startY, p.y),
+          width: Math.abs(p.x - startX),
+          height: Math.abs(p.y - startY),
+        };
+        renderBox(currentBox);
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (!drawing) return;
+        drawing = false;
+        if (currentBox && currentBox.width > 10 && currentBox.height > 10) {
+          feedbackBtn.disabled = false;
+          clearSelectionBtn.disabled = false;
+          manualStatus.textContent = `Box selected at ${formatTime(player.currentTime)}. Click Feedback.`;
+        } else {
+          clearBox();
+        }
+      });
+
+      feedbackBtn.addEventListener("click", async () => {
+        if (!currentBox) return;
+        const rect = player.getBoundingClientRect();
+        const payload = {
+          timestamp_sec: player.currentTime,
+          feedback_prompt: feedbackPrompt.value.trim(),
+          player_name: playerNameInput.value.trim(),
+          bbox: {
+            x: currentBox.x / rect.width,
+            y: currentBox.y / rect.height,
+            width: currentBox.width / rect.width,
+            height: currentBox.height / rect.height,
+          }
+        };
+        feedbackBtn.disabled = true;
+        manualStatus.textContent = "Analyzing previous 2 seconds...";
+        try {
+          const response = await fetch(`/api/reviews/${review.id}/manual-feedback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Unable to create feedback.");
+          markers.push({
+            ...data.marker,
+            timestamp_sec: Number(data.marker.timestamp_sec),
+          });
+          markers.sort((a, b) => a.timestamp_sec - b.timestamp_sec);
+          renderMarkers();
+          clearBox();
+          manualStatus.textContent = `Marker added at ${formatTime(data.marker.timestamp_sec)}.`;
+          await jumpToMarker(data.marker);
+        } catch (error) {
+          manualStatus.textContent = error.message || "Unable to create feedback.";
+          feedbackBtn.disabled = false;
+        }
+      });
+
+      clearSelectionBtn.addEventListener("click", () => {
+        clearBox();
+        manualStatus.textContent = "Selection cleared. Draw a new box while paused.";
+      });
+
+      removeMarkersBtn.addEventListener("click", async () => {
+        removeMarkersBtn.disabled = true;
+        manualStatus.textContent = "Removing markers...";
+        try {
+          const response = await fetch(`/api/reviews/${review.id}/markers`, { method: "DELETE" });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Unable to remove markers.");
+          markers = [];
+          renderMarkers();
+          detailTitle.textContent = "No marker selected";
+          detailMeta.textContent = "Click a marker stick to view feedback here.";
+          detailNote.textContent = "";
+          detailExtra.textContent = "";
+          focusBox.classList.add("hidden");
+          manualStatus.textContent = "All markers removed.";
+        } catch (error) {
+          manualStatus.textContent = error.message || "Unable to remove markers.";
+        } finally {
+          removeMarkersBtn.disabled = false;
+        }
+      });
+
+      shareBtn.addEventListener("click", async () => {
+        shareBtn.disabled = true;
+        shareStatus.textContent = "Creating link...";
+        try {
+          const response = await fetch(`/api/reviews/${review.id}/share`, { method: "POST" });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Unable to create share link.");
+          shareUrl.value = data.share_url;
+          await navigator.clipboard?.writeText(data.share_url);
+          shareStatus.textContent = "Copied.";
+        } catch (error) {
+          shareStatus.textContent = error.message || "Unable to create share link.";
+        } finally {
+          shareBtn.disabled = false;
+        }
+      });
+
+      detailClose.addEventListener("click", () => {
+        detailTitle.textContent = "No marker selected";
+        detailMeta.textContent = "Click a marker stick to view feedback here.";
+        detailNote.textContent = "";
+        detailExtra.textContent = "";
+        focusBox.classList.add("hidden");
+      });
+
+      player.addEventListener("pause", () => {
+        bboxLayer.classList.remove("disabled");
+        manualStatus.textContent = "Draw a box around the player, then click Feedback.";
+      });
+
+      player.addEventListener("play", () => {
+        bboxLayer.classList.add("disabled");
+        clearBox();
+        manualStatus.textContent = "Pause at a moment you want to review.";
+      });
+
+      player.addEventListener("error", () => {
+        videoStatus.textContent = "The browser could not play this video URL. The signed link may be expired or blocked.";
+      });
+
+      player.addEventListener("loadedmetadata", () => {
+        videoStatus.textContent = `Video loaded. Duration: ${formatTime(player.duration || duration)}.`;
+      });
+
+      renderMarkers();
+    </script>
+  </body>
+</html>

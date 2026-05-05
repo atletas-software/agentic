@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Building Review</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+    <style>
+      body { background: linear-gradient(160deg, #f7f4eb, #e4edf3); min-height: 100vh; }
+      main { max-width: 760px; }
+      .card { background: rgba(255,255,255,.92); padding: 1.5rem; border-radius: 18px; }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <section class="card">
+        <h1>Building review</h1>
+        <p id="status-line">Starting...</p>
+        <div id="details"></div>
+      </section>
+    </main>
+    <script>
+      const reviewId = "{{ review_id }}";
+      const statusLine = document.getElementById("status-line");
+      const details = document.getElementById("details");
+
+      async function poll() {
+        const response = await fetch(`/api/reviews/${reviewId}/status`);
+        const data = await response.json();
+        if (!response.ok) {
+          statusLine.textContent = data.error || "Unable to load status.";
+          return;
+        }
+
+        statusLine.textContent = `Status: ${data.status}`;
+        if (data.status === "completed") {
+          details.innerHTML = `<p>Review is ready.</p><p><a href="${data.review_url}">Open review link</a></p>`;
+          return;
+        }
+        if (data.status === "failed") {
+          details.innerHTML = `<p><strong>Failed:</strong> ${data.error}</p>`;
+          return;
+        }
+        details.innerHTML = `<p>Video: ${data.video_url}</p><p>Player: ${data.player_focus || "Not provided"}</p>`;
+        setTimeout(poll, 3000);
+      }
+
+      poll();
+    </script>
+  </body>
+</html>

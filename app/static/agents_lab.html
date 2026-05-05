@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Lab</title>
+    <style>
+      :root {
+        --bg: #f1f5f9;
+        --surface: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --primary: #2563eb;
+        --primary-strong: #1d4ed8;
+        --border: #e2e8f0;
+        --ok: #059669;
+        --warn: #d97706;
+        --err: #dc2626;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, Arial, sans-serif;
+        color: var(--text);
+        background: radial-gradient(circle at top left, #dbeafe 0%, #eff6ff 25%, var(--bg) 100%);
+        overflow-x: hidden;
+        min-width: 0;
+      }
+      .container {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 24px;
+        width: 100%;
+        min-width: 0;
+        overflow-x: clip;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      h1 { margin: 0; font-size: 32px; }
+      .subtle { margin-top: 6px; color: var(--muted); font-size: 14px; }
+      .nav { display: flex; gap: 8px; flex-wrap: wrap; }
+      .nav a, .nav button {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 8px 12px;
+        background: #fff;
+        color: #0f172a;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .nav a.primary, button.primary {
+        background: linear-gradient(180deg, var(--primary), var(--primary-strong));
+        color: #fff;
+        border-color: var(--primary);
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+        margin-bottom: 14px;
+        min-width: 0;
+      }
+      .grid {
+        display: grid;
+        gap: 14px;
+        /* minmax(0, …) lets columns shrink so wide pre/JSON cannot blow out the layout */
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+        width: 100%;
+        min-width: 0;
+      }
+      .grid > .card {
+        min-width: 0;
+      }
+      h3 {
+        margin: 0 0 14px;
+        font-size: 1.1rem;
+        font-weight: 700;
+      }
+      h4 {
+        margin: 18px 0 10px;
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #334155;
+      }
+      .label { display: block; margin: 10px 0 6px; color: #334155; font-size: 13px; font-weight: 600; }
+      input, textarea, select {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: #fff;
+      }
+      textarea { min-height: 78px; resize: vertical; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      button {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled { opacity: .65; cursor: wait; }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 4px 8px;
+        background: #e2e8f0;
+        color: #334155;
+      }
+      .pill.ok { background: #dcfce7; color: #166534; }
+      .pill.running { background: #dbeafe; color: #1d4ed8; }
+      .pill.failed { background: #fee2e2; color: #991b1b; }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+      pre {
+        margin: 0;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1px solid #1e293b;
+        background: #0b1220;
+        color: #e2e8f0;
+        /* default `pre` is white-space:pre — must wrap or long JSON overflows the viewport */
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        overflow-x: auto;
+        overflow-y: auto;
+        max-height: min(52vh, 420px);
+        min-height: 10rem;
+        max-width: 100%;
+        width: 100%;
+        min-width: 0;
+        font-size: 13px;
+        line-height: 1.55;
+        tab-size: 2;
+        box-sizing: border-box;
+      }
+      .list {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        max-height: min(40vh, 320px);
+        overflow: auto;
+        background: #f8fafc;
+      }
+      .item {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #e2e8f0;
+        cursor: pointer;
+        line-height: 1.45;
+        min-width: 0;
+      }
+      .item strong {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+      .item-meta {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+      .item-time {
+        font-size: 12px;
+        line-height: 1.4;
+        color: #94a3b8;
+        margin-top: 2px;
+      }
+      .item-err {
+        color: #b91c1c;
+        font-weight: 500;
+      }
+      .item-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 10px;
+      }
+      .item:last-child { border-bottom: 0; }
+      .item:hover { background: #fff; }
+      .item.active {
+        background: #eff6ff;
+        box-shadow: inset 3px 0 0 0 var(--primary);
+      }
+      .small { font-size: 12px; color: var(--muted); }
+      .status { margin-left: 8px; font-size: 13px; color: var(--muted); }
+      .notice { margin-top: 8px; font-size: 13px; color: #334155; }
+      .error { color: var(--err); }
+      .oktext { color: var(--ok); }
+      @media (max-width: 980px) {
+        .grid { grid-template-columns: 1fr; }
+        .row { grid-template-columns: 1fr; }
+      }
+      .sheet-row-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 10px;
+        margin-bottom: 14px;
+        padding: 12px;
+        background: #f8fafc;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+      }
+      .sheet-row-bar .grow {
+        flex: 1 1 200px;
+        min-width: 0;
+      }
+      .sheet-row-bar select {
+        width: 100%;
+        min-width: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="topbar">
+        <div>
+          <h1>Agent Lab</h1>
+          <div class="subtle">Test workspace refresh, context snapshots, feedback review jobs, and video stub jobs.</div>
+        </div>
+        <div class="nav">
+          <a href="/app/sheets">Sheets</a>
+          <a href="/app/settings">Settings</a>
+          <a href="/admin">Admin</a>
+          <button id="logoutBtn">Logout</button>
+        </div>
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h3>Workspace controls</h3>
+          <div class="actions">
+            <button class="primary" id="refreshWorkspaceBtn">Refresh context</button>
+            <button id="reloadWorkspaceBtn">Reload workspace</button>
+            <span id="workspaceStatus" class="status">Idle</span>
+          </div>
+          <p class="notice">Refresh triggers destination-sheet snapshotting in the workspace queue.</p>
+
+          <h4>Context items</h4>
+          <div id="contextList" class="list"></div>
+          <p class="small">Click an item to inspect full payload.</p>
+        </section>
+
+        <section class="card">
+          <h3>Context payload</h3>
+          <pre id="contextPayload">Select a context item.</pre>
+        </section>
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h3>Create feedback review job</h3>
+          <p class="small" style="margin: -6px 0 12px;">
+            Use <strong>Refresh context</strong> above first, then load rows from your latest destination snapshot. Pick a row to fill video link, player, and game details into the form (you can edit before submitting).
+          </p>
+          <div class="sheet-row-bar">
+            <div class="grow">
+              <label class="label" for="destinationRowSelect" style="margin-top: 0;">Row from destination sheet</label>
+              <select id="destinationRowSelect" disabled>
+                <option value="">— Load snapshot rows first —</option>
+              </select>
+            </div>
+            <button type="button" id="loadSnapshotRowsBtn">Load rows</button>
+            <button type="button" class="primary" id="applyRowBtn" disabled>Apply row</button>
+          </div>
+          <label class="label" for="videoUrl">Video URL</label>
+          <input id="videoUrl" placeholder="https://..." />
+          <div class="row">
+            <div>
+              <label class="label" for="playerFocus">Player focus</label>
+              <input id="playerFocus" placeholder="Player name or role" />
+            </div>
+            <div>
+              <label class="label" for="sport">Sport</label>
+              <input id="sport" value="Soccer" />
+            </div>
+          </div>
+          <label class="label" for="analysisScope">Analysis scope</label>
+          <textarea id="analysisScope" rows="4">Focus on clips where the selected player is clearly visible. When game details mention substitution times or a segment (for example “from minute 51 to full time”), treat that as the primary review window; otherwise review the full clip.</textarea>
+          <label class="label" for="coachingFocus">Coaching focus</label>
+          <textarea id="coachingFocus" rows="4">Prioritize scanning before receiving, body shape when showing for the ball, support angles and spacing in possession, and pressing triggers when out of possession.</textarea>
+          <div class="actions">
+            <button class="primary" id="createFeedbackBtn">Create feedback job</button>
+            <button id="createVideoStubBtn">Create video stub job</button>
+            <span id="createStatus" class="status">Idle</span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Agent jobs</h3>
+          <div class="actions">
+            <button id="reloadJobsBtn">Reload jobs</button>
+            <button id="autoPollBtn">Auto-poll: Off</button>
+          </div>
+          <div id="jobsList" class="list"></div>
+          <p class="small">Select a job to inspect payload/result details.</p>
+        </section>
+      </div>
+
+      <section class="card">
+        <h3>Selected job details</h3>
+        <pre id="jobPayload">Select a job.</pre>
+      </section>
+    </div>
+
+    <script>
+      const contextListEl = document.getElementById("contextList");
+      const contextPayloadEl = document.getElementById("contextPayload");
+      const jobsListEl = document.getElementById("jobsList");
+      const jobPayloadEl = document.getElementById("jobPayload");
+      const workspaceStatusEl = document.getElementById("workspaceStatus");
+      const createStatusEl = document.getElementById("createStatus");
+      const autoPollBtn = document.getElementById("autoPollBtn");
+
+      let workspaceData = null;
+      let selectedContextId = null;
+      let selectedJobId = null;
+      let autoPoll = false;
+      let pollTimer = null;
+      let cachedSnapshot = null;
+
+      const DEFAULT_ANALYSIS_SCOPE =
+        "Focus on clips where the selected player is clearly visible. When game details mention substitution times or a segment (for example “from minute 51 to full time”), treat that as the primary review window; otherwise review the full clip.";
+      const DEFAULT_COACHING_FOCUS =
+        "Prioritize scanning before receiving, body shape when showing for the ball, support angles and spacing in possession, and pressing triggers when out of possession.";
+
+      function setText(el, value) {
+        el.textContent = value;
+      }
+
+      function pretty(value) {
+        return JSON.stringify(value, null, 2);
+      }
+
+      function escapeHtml(str) {
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          credentials: "include",
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+          ...options,
+        });
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = null;
+        }
+        if (!response.ok) {
+          const detail = data?.detail || data?.error || response.statusText;
+          throw new Error(`${response.status} ${detail}`);
+        }
+        return data;
+      }
+
+      function statusPill(status) {
+        const raw = String(status || "UNKNOWN");
+        const upper = raw.toUpperCase();
+        const cls = upper.includes("SUCCESS") ? "ok" : upper.includes("RUNNING") || upper.includes("PENDING") ? "running" : upper.includes("FAIL") ? "failed" : "";
+        return `<span class="pill ${cls}">${raw}</span>`;
+      }
+
+      function normalizeRowCells(headers, row) {
+        const out = [];
+        const len = headers.length;
+        for (let i = 0; i < len; i++) out.push(row[i] != null ? String(row[i]).trim() : "");
+        return out;
+      }
+
+      function cellByExactHeader(headers, cells, headerName) {
+        const idx = headers.findIndex((h) => String(h).trim() === headerName);
+        if (idx < 0) return "";
+        return cells[idx] || "";
+      }
+
+      function findGameDetailsColumn(headers, cells) {
+        for (let i = 0; i < headers.length; i++) {
+          const h = String(headers[i] || "").trim().toLowerCase();
+          if (h.startsWith("game details")) return String(cells[i] || "").trim();
+        }
+        return "";
+      }
+
+      function findVideoUrl(headers, cells) {
+        for (let i = 0; i < headers.length; i++) {
+          const v = String(cells[i] || "").trim();
+          if (!v || !v.startsWith("http")) continue;
+          const hl = String(headers[i] || "").trim().toLowerCase();
+          if (hl === "link to game") return v;
+          if (hl.includes("video") && hl.includes("link")) return v;
+          if (hl.includes("link") && (hl.includes("game") || hl.includes("video"))) return v;
+        }
+        for (let i = 0; i < cells.length; i++) {
+          const v = String(cells[i] || "").trim();
+          if (!v.startsWith("http")) continue;
+          if (/youtube\.com|youtu\.be|hudl\.com|vimeo\.com/i.test(v)) return v;
+        }
+        return "";
+      }
+
+      function buildPlayerFocusFromRow(headers, cells) {
+        const jersey = cellByExactHeader(headers, cells, "Team Number").replace(/^#/, "");
+        const pos = cellByExactHeader(headers, cells, "Position Played");
+        const name = cellByExactHeader(headers, cells, "First and Last name");
+        const parts = [];
+        if (jersey) parts.push(`#${jersey}`);
+        if (pos) parts.push(pos);
+        if (name) parts.push(name);
+        return parts.join(" ").trim();
+      }
+
+      function rowSummaryLabel(headers, cells, rowIndex) {
+        const name = cellByExactHeader(headers, cells, "First and Last name") || cells[0] || `Row ${rowIndex + 1}`;
+        const link = findVideoUrl(headers, cells);
+        const short = link ? (link.length > 48 ? link.slice(0, 45) + "…" : link) : "(no link)";
+        return `Row ${rowIndex + 2}: ${name.slice(0, 40)}${name.length > 40 ? "…" : ""} — ${short}`;
+      }
+
+      function fillDestinationRowSelect(payload) {
+        const sel = document.getElementById("destinationRowSelect");
+        const applyBtn = document.getElementById("applyRowBtn");
+        sel.innerHTML = "";
+        cachedSnapshot = payload && payload.headers ? payload : null;
+        if (!cachedSnapshot?.headers?.length || !Array.isArray(cachedSnapshot.rows)) {
+          sel.appendChild(new Option("— No tabular rows in snapshot —", ""));
+          sel.disabled = true;
+          applyBtn.disabled = true;
+          return;
+        }
+        sel.appendChild(new Option("— Select a row —", ""));
+        cachedSnapshot.rows.forEach((row, idx) => {
+          const cells = normalizeRowCells(cachedSnapshot.headers, row);
+          const label = rowSummaryLabel(cachedSnapshot.headers, cells, idx);
+          sel.appendChild(new Option(label, String(idx)));
+        });
+        sel.disabled = false;
+        applyBtn.disabled = true;
+      }
+
+      async function loadSnapshotRowsForForm() {
+        const applyBtn = document.getElementById("applyRowBtn");
+        setText(createStatusEl, "Loading snapshot…");
+        try {
+          if (!workspaceData) await loadWorkspace();
+          const items = workspaceData?.context_items || [];
+          const snap = items.find((i) => i.item_type === "destination_snapshot");
+          if (!snap) {
+            setText(createStatusEl, "No destination_snapshot yet. Click Refresh context and wait for the worker.");
+            fillDestinationRowSelect(null);
+            return;
+          }
+          const data = await api(`/agents/workspace/context/${snap.id}`);
+          const payload = data.payload;
+          if (!payload?.headers) {
+            setText(createStatusEl, "Snapshot has no headers.");
+            fillDestinationRowSelect(null);
+            return;
+          }
+          fillDestinationRowSelect(payload);
+          setText(createStatusEl, `Loaded ${payload.rows?.length || 0} row(s). Pick one and click Apply row.`);
+        } catch (error) {
+          setText(createStatusEl, `Snapshot load failed: ${error.message}`);
+          fillDestinationRowSelect(null);
+        }
+      }
+
+      function applySelectedDestinationRow() {
+        const sel = document.getElementById("destinationRowSelect");
+        const idx = Number(sel.value);
+        if (!cachedSnapshot?.headers || !Number.isFinite(idx) || idx < 0 || !cachedSnapshot.rows[idx]) {
+          setText(createStatusEl, "Select a valid row first.");
+          return;
+        }
+        const headers = cachedSnapshot.headers.map((h) => String(h));
+        const cells = normalizeRowCells(headers, cachedSnapshot.rows[idx]);
+        const video = findVideoUrl(headers, cells);
+        document.getElementById("videoUrl").value = video;
+        document.getElementById("playerFocus").value = buildPlayerFocusFromRow(headers, cells);
+        const sportCol = cellByExactHeader(headers, cells, "Sport") || cellByExactHeader(headers, cells, "sport");
+        if (sportCol) document.getElementById("sport").value = sportCol;
+        const gd = findGameDetailsColumn(headers, cells);
+        document.getElementById("analysisScope").value = gd
+          ? `${DEFAULT_ANALYSIS_SCOPE}\n\nFrom sheet (game details):\n${gd}`
+          : DEFAULT_ANALYSIS_SCOPE;
+        document.getElementById("coachingFocus").value = DEFAULT_COACHING_FOCUS;
+        setText(createStatusEl, "Form filled from sheet row. Add or edit fields, then create job.");
+      }
+
+      function renderContextItems(items) {
+        if (!items?.length) {
+          contextListEl.innerHTML = `<div class="item small">No context items yet.</div>`;
+          return;
+        }
+        contextListEl.innerHTML = items.map((item) => `
+          <div class="item ${selectedContextId === item.id ? "active" : ""}" data-context-id="${item.id}">
+            <div><strong>${item.item_type}</strong></div>
+            <div class="item-meta mono">id=${item.id} · ${item.content_hash || ""}</div>
+            <div class="item-time">${item.created_at || "—"}</div>
+          </div>
+        `).join("");
+      }
+
+      function renderJobs(jobs) {
+        if (!jobs?.length) {
+          jobsListEl.innerHTML = `<div class="item small">No jobs yet.</div>`;
+          return;
+        }
+        jobsListEl.innerHTML = jobs.map((job) => {
+          const err = job.error_message
+            ? escapeHtml(String(job.error_message).slice(0, 120)) +
+              (String(job.error_message).length > 120 ? "…" : "")
+            : "";
+          const errBlock = err ? ` · <span class="item-err">${err}</span>` : "";
+          return `
+          <div class="item ${selectedJobId === job.id ? "active" : ""}" data-job-id="${job.id}">
+            <div class="item-row"><strong>${job.agent_type}</strong> ${statusPill(job.status)}</div>
+            <div class="item-meta mono">job ${job.id}${job.external_ref ? " · " + escapeHtml(String(job.external_ref)) : ""}</div>
+            <div class="item-time">${job.created_at || "—"}${errBlock}</div>
+          </div>`;
+        }).join("");
+      }
+
+      async function loadWorkspace() {
+        setText(workspaceStatusEl, "Loading workspace...");
+        try {
+          workspaceData = await api("/agents/workspace");
+          renderContextItems(workspaceData.context_items || []);
+          renderJobs(workspaceData.agent_jobs || []);
+          setText(workspaceStatusEl, "Workspace loaded");
+        } catch (error) {
+          setText(workspaceStatusEl, `Load failed: ${error.message}`);
+        }
+      }
+
+      async function refreshWorkspaceContext() {
+        setText(workspaceStatusEl, "Queueing refresh...");
+        try {
+          await api("/agents/workspace/refresh-context", { method: "POST", body: "{}" });
+          setText(workspaceStatusEl, "Refresh queued. Reloading...");
+          await loadWorkspace();
+        } catch (error) {
+          setText(workspaceStatusEl, `Refresh failed: ${error.message}`);
+        }
+      }
+
+      async function loadContextPayload(itemId) {
+        selectedContextId = itemId;
+        renderContextItems(workspaceData?.context_items || []);
+        setText(contextPayloadEl, "Loading context payload...");
+        try {
+          const data = await api(`/agents/workspace/context/${itemId}`);
+          setText(contextPayloadEl, pretty(data));
+        } catch (error) {
+          setText(contextPayloadEl, `Failed: ${error.message}`);
+        }
+      }
+
+      async function loadJob(jobId) {
+        selectedJobId = jobId;
+        renderJobs(workspaceData?.agent_jobs || []);
+        setText(jobPayloadEl, "Loading job...");
+        try {
+          const data = await api(`/agents/jobs/${jobId}`);
+          setText(jobPayloadEl, pretty(data));
+        } catch (error) {
+          setText(jobPayloadEl, `Failed: ${error.message}`);
+        }
+      }
+
+      async function createFeedbackJob() {
+        const payload = {
+          video_url: document.getElementById("videoUrl").value.trim(),
+          player_focus: document.getElementById("playerFocus").value.trim(),
+          sport: document.getElementById("sport").value.trim() || "Soccer",
+          analysis_scope: document.getElementById("analysisScope").value.trim(),
+          coaching_focus: document.getElementById("coachingFocus").value.trim(),
+        };
+        if (!payload.video_url) {
+          setText(createStatusEl, "Video URL is required");
+          return;
+        }
+        setText(createStatusEl, "Creating feedback job...");
+        try {
+          const result = await api("/agents/feedback/reviews", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          setText(createStatusEl, `Created job #${result.agent_job_id}`);
+          await loadWorkspace();
+          await loadJob(result.agent_job_id);
+        } catch (error) {
+          setText(createStatusEl, `Create failed: ${error.message}`);
+        }
+      }
+
+      async function createVideoStubJob() {
+        setText(createStatusEl, "Creating video stub job...");
+        try {
+          const result = await api("/agents/video/process-stub", { method: "POST", body: "{}" });
+          setText(createStatusEl, `Created stub job #${result.agent_job_id}`);
+          await loadWorkspace();
+          await loadJob(result.agent_job_id);
+        } catch (error) {
+          setText(createStatusEl, `Create failed: ${error.message}`);
+        }
+      }
+
+      function setAutoPoll(enabled) {
+        autoPoll = enabled;
+        autoPollBtn.textContent = `Auto-poll: ${enabled ? "On" : "Off"}`;
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        if (enabled) {
+          pollTimer = setInterval(async () => {
+            await loadWorkspace();
+            if (selectedJobId) {
+              await loadJob(selectedJobId);
+            }
+          }, 5000);
+        }
+      }
+
+      document.getElementById("destinationRowSelect").addEventListener("change", () => {
+        const sel = document.getElementById("destinationRowSelect");
+        document.getElementById("applyRowBtn").disabled = sel.value === "" || sel.disabled;
+      });
+      document.getElementById("loadSnapshotRowsBtn").addEventListener("click", loadSnapshotRowsForForm);
+      document.getElementById("applyRowBtn").addEventListener("click", applySelectedDestinationRow);
+
+      document.getElementById("refreshWorkspaceBtn").addEventListener("click", refreshWorkspaceContext);
+      document.getElementById("reloadWorkspaceBtn").addEventListener("click", loadWorkspace);
+      document.getElementById("createFeedbackBtn").addEventListener("click", createFeedbackJob);
+      document.getElementById("createVideoStubBtn").addEventListener("click", createVideoStubJob);
+      document.getElementById("reloadJobsBtn").addEventListener("click", loadWorkspace);
+      autoPollBtn.addEventListener("click", () => setAutoPoll(!autoPoll));
+
+      contextListEl.addEventListener("click", (event) => {
+        const item = event.target.closest("[data-context-id]");
+        if (!item) return;
+        const id = Number(item.getAttribute("data-context-id"));
+        if (!Number.isFinite(id)) return;
+        loadContextPayload(id);
+      });
+
+      jobsListEl.addEventListener("click", (event) => {
+        const item = event.target.closest("[data-job-id]");
+        if (!item) return;
+        const id = Number(item.getAttribute("data-job-id"));
+        if (!Number.isFinite(id)) return;
+        loadJob(id);
+      });
+
+      document.getElementById("logoutBtn").addEventListener("click", async () => {
+        try {
+          await fetch("/auth/logout", { method: "POST", credentials: "include" });
+        } finally {
+          window.location.href = "/app/connect";
+        }
+      });
+
+      loadWorkspace();
+    </script>
+  </body>
+</html>

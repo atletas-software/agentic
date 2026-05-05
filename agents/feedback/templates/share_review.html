@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ review.title }}</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+    <style>
+      :root {
+        --positive: #1f8f57;
+        --corrective: #b55c14;
+        --mixed: #2459a6;
+      }
+      body { background: linear-gradient(160deg, #f4efe6, #dae7f1); min-height: 100vh; }
+      main { max-width: 1180px; }
+      .layout { display: grid; grid-template-columns: 2fr 1fr; gap: 1.25rem; }
+      .panel { background: rgba(255,255,255,.94); border-radius: 18px; padding: 1rem; box-shadow: 0 20px 40px rgba(15,23,42,.08); }
+      video { width: 100%; border-radius: 14px; background: #000; display: block; }
+      .timeline { position: relative; height: 14px; background: #d8e2ea; border-radius: 999px; margin: 1rem 0; }
+      .marker-dot {
+        position: absolute;
+        top: -7px;
+        width: 2px;
+        height: 28px;
+        border-radius: 999px;
+        border: 0;
+        cursor: pointer;
+        transform: translateX(-50%);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, .95), 0 1px 3px rgba(15, 23, 42, .35);
+      }
+      .marker-dot::before {
+        content: "";
+        position: absolute;
+        left: -7px;
+        top: -4px;
+        width: 16px;
+        height: 36px;
+      }
+      .marker-dot:hover,
+      .marker-dot:focus {
+        width: 4px;
+        z-index: 2;
+      }
+      .positive { background: var(--positive); }
+      .corrective { background: var(--corrective); }
+      .mixed { background: var(--mixed); }
+      .marker-list { display: none; }
+      .marker-card { border-left: 4px solid #adc; padding: .85rem 1rem; margin-bottom: .8rem; border-radius: 10px; background: #f9fbfd; cursor: pointer; }
+      .marker-card.positive { border-left-color: var(--positive); }
+      .marker-card.corrective { border-left-color: var(--corrective); }
+      .marker-card.mixed { border-left-color: var(--mixed); }
+      .small { color: #52606d; font-size: .9rem; }
+      .detail-panel {
+        margin-top: 1rem;
+        border-radius: 16px;
+        padding: 1rem 1.1rem;
+        background: #f7fafc;
+        border: 1px solid #dde6ee;
+      }
+      .detail-panel.hidden { display: none; }
+      .focus-box img {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid #dde6ee;
+        background: #eef3f8;
+      }
+      @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <h1>{{ review.title }}</h1>
+      <p>{{ review.video_summary.analysis_scope }}</p>
+      <div class="layout">
+        <section class="panel">
+          <video id="player" controls preload="metadata" playsinline>
+            <source src="{{ review.video_url }}" type="video/mp4">
+          </video>
+          <div class="timeline" id="timeline"></div>
+          <div class="small">Click any marker to jump to that moment and read the feedback.</div>
+          <div class="small" id="video-status"></div>
+          <div class="detail-panel hidden" id="marker-detail">
+            <h4 id="detail-title"></h4>
+            <div class="small" id="detail-meta"></div>
+            <p id="detail-note"></p>
+            <div class="small" id="detail-extra"></div>
+            <div class="focus-box" id="focus-box">
+              <div class="small" id="focus-status"></div>
+              <img id="focus-image" alt="Selected player frame">
+            </div>
+          </div>
+        </section>
+        <div id="marker-list" class="marker-list"></div>
+      </div>
+    </main>
+    <script>
+      const review = {{ review | tojson }};
+      const player = document.getElementById("player");
+      const timeline = document.getElementById("timeline");
+      const markerList = document.getElementById("marker-list");
+      const detailPanel = document.getElementById("marker-detail");
+      const detailTitle = document.getElementById("detail-title");
+      const detailMeta = document.getElementById("detail-meta");
+      const detailNote = document.getElementById("detail-note");
+      const detailExtra = document.getElementById("detail-extra");
+      const focusStatus = document.getElementById("focus-status");
+      const focusImage = document.getElementById("focus-image");
+      const videoStatus = document.getElementById("video-status");
+      const duration = review.duration_sec || 1;
+      const markers = (review.markers || []).map((marker) => ({
+        ...marker,
+        timestamp_sec: Math.max(0, Math.min(Number(marker.timestamp_sec || 0), Math.max(duration - 0.25, 0)))
+      }));
+
+      function formatTime(totalSeconds) {
+        const sec = Math.max(0, Math.floor(totalSeconds));
+        const minutes = Math.floor(sec / 60);
+        const seconds = sec % 60;
+        return `${minutes}:${String(seconds).padStart(2, "0")}`;
+      }
+
+      function markerHtml(marker) {
+        return `
+          <article class="marker-card ${marker.sentiment}" data-time="${marker.timestamp_sec}">
+            <strong>${marker.label}</strong>
+            <div class="small">${marker.timestamp_sec}s • ${(marker.action_type || "other").replaceAll("_", " ")}</div>
+            <p>${marker.coaching_note || ""}</p>
+          </article>
+        `;
+      }
+
+      function showDetail(marker) {
+        detailTitle.textContent = marker.label;
+        const actionType = (marker.action_type || "other").replaceAll("_", " ");
+        detailMeta.textContent = `${formatTime(marker.timestamp_sec)} • ${actionType} • ${marker.category} • ${marker.sentiment}`;
+        detailNote.textContent = marker.coaching_note || "";
+        const extra = [];
+        if (marker.manual_context_sec !== undefined) extra.push(`Context reviewed from ${formatTime(marker.manual_context_sec)} to ${formatTime(marker.timestamp_sec)}`);
+        if (marker.player_name) extra.push(`Player: ${marker.player_name}`);
+        if (marker.feedback_prompt) extra.push(`Feedback focus: ${marker.feedback_prompt}`);
+        detailExtra.textContent = extra.join(" | ");
+        detailPanel.classList.remove("hidden");
+        if (marker.manual_image_url) {
+          focusStatus.textContent = "Selected player frame.";
+          focusImage.src = marker.manual_image_url;
+        } else {
+          focusStatus.textContent = "";
+          focusImage.removeAttribute("src");
+        }
+      }
+
+      function jumpToMarker(marker) {
+        showDetail(marker);
+        const targetTime = Math.max(0, Math.min(marker.timestamp_sec, Math.max(duration - 0.25, 0)));
+        player.pause();
+        player.currentTime = targetTime;
+        videoStatus.textContent = `Paused at ${formatTime(targetTime)}.`;
+      }
+
+      function renderMarkers() {
+        timeline.innerHTML = "";
+        markerList.innerHTML = "";
+        markers.forEach((marker) => {
+          const dot = document.createElement("button");
+          dot.className = `marker-dot ${marker.sentiment}`;
+          dot.style.left = `${(marker.timestamp_sec / duration) * 100}%`;
+          dot.title = `${marker.label} @ ${marker.timestamp_sec}s`;
+          dot.type = "button";
+          dot.addEventListener("click", () => jumpToMarker(marker));
+          timeline.appendChild(dot);
+        });
+      }
+
+      player.addEventListener("error", () => {
+        videoStatus.textContent = "The browser could not play this video URL. The signed link may be expired or blocked.";
+      });
+
+      player.addEventListener("loadedmetadata", () => {
+        videoStatus.textContent = `Video loaded. Duration: ${formatTime(player.duration || duration)}.`;
+      });
+
+      renderMarkers();
+    </script>
+  </body>
+</html>

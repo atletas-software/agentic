@@ -68,6 +68,11 @@ async def app_settings_ui() -> str:
     return _read_static_page("google_settings.html")
 
 
+@router.get("/app/agents", response_class=HTMLResponse)
+async def app_agents_ui() -> str:
+    return _read_static_page("agents_lab.html")
+
+
 @router.get("/admin", response_class=HTMLResponse, response_model=None)
 async def admin_ui(
     admin_session_id: str | None = Cookie(default=None),

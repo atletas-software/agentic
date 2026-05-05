@@ -2,19 +2,33 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: app/Dockerfile
     container_name: sheet-mcp-api
     env_file:
-      - .env
+      - app/.env
     environment:
       # Force container-network defaults unless explicitly overridden.
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
-    command: ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}"]
+      FEEDBACK_AGENT_BASE_URL: ${FEEDBACK_AGENT_BASE_URL_DOCKER:-http://feedback-agent:5055}
+      # Set to 0 for multi-worker production-style runs (no auto-reload).
+      DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
+    command:
+      - sh
+      - -c
+      - |
+          set -e
+          if [ "$${DEV_HOT_RELOAD:-0}" = "1" ]; then
+            exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+          else
+            exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
+          fi
     ports:
       - "8000:8000"
     volumes:
+      # Live code + static files from host (no image rebuild on edit). Matches Dockerfile WORKDIR /app.
+      - .:/app
       # Keep Google service-account credentials outside image layers.
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
@@ -34,22 +48,55 @@ services:
   worker:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: app/Dockerfile
     container_name: sheet-mcp-worker
     command: ["python", "-m", "app.workers.run_worker"]
     env_file:
-      - .env
+      - app/.env
     environment:
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
+      FEEDBACK_AGENT_BASE_URL: ${FEEDBACK_AGENT_BASE_URL_DOCKER:-http://feedback-agent:5055}
     volumes:
+      # Code from host; RQ still loads Python at process start — run `docker compose restart worker` after worker code edits.
+      - .:/app
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      feedback-agent:
+        condition: service_started
+    init: true
+    restart: unless-stopped
+
+  feedback-agent:
+    build:
+      context: .
+      dockerfile: agents/feedback/Dockerfile
+    container_name: sheet-mcp-feedback-agent
+    env_file:
+      - agents/.env
+    environment:
+      PORT: 5055
+      DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
+    command:
+      - sh
+      - -c
+      - |
+          set -e
+          if [ "$${DEV_HOT_RELOAD:-0}" = "1" ]; then
+            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055} --reload
+          else
+            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055}
+          fi
+    ports:
+      - "5055:5055"
+    volumes:
+      - .:/app
+      - feedback_agent_data:/app/data
     init: true
     restart: unless-stopped
 
@@ -70,6 +117,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strongpassword}
       POSTGRES_DB: ${POSTGRES_DB:-athlete}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -81,3 +130,4 @@ services:
 
 volumes:
   postgres_data:
+  feedback_agent_data:

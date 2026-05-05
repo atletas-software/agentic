@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Feedback Agent</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+    <style>
+      body { background: linear-gradient(160deg, #f3efe6, #dde8ef); min-height: 100vh; }
+      main { max-width: 920px; }
+      .card { background: rgba(255,255,255,.9); padding: 1.5rem; border-radius: 18px; box-shadow: 0 24px 60px rgba(15,23,42,.08); }
+      .result { margin-top: 1rem; padding: 1rem; background: #eef7f1; border-radius: 12px; display: none; }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Video Feedback Agent</h1>
+      <p>Paste a video URL, generate markers, and get a new local review link.</p>
+      <section class="card">
+        <form id="review-form">
+          <label>Video URL
+            <input type="url" name="video_url" placeholder="https://example.com/video.mp4" required>
+          </label>
+          <label>Player focus
+            <input type="text" name="player_focus" placeholder="#18 central midfielder">
+          </label>
+          <label>Sport
+            <input type="text" name="sport" value="Soccer">
+          </label>
+          <label>Analysis scope
+            <input type="text" name="analysis_scope" placeholder="Played from minute 51 to full time.">
+          </label>
+          <label>Coaching focus
+            <input type="text" name="coaching_focus" placeholder="Scanning, body shape, and support angles">
+          </label>
+          <button type="submit">Create review link</button>
+        </form>
+        <div class="result" id="result"></div>
+      </section>
+    </main>
+    <script>
+      const form = document.getElementById("review-form");
+      const result = document.getElementById("result");
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        result.style.display = "block";
+        result.innerHTML = "Creating review job...";
+        const payload = Object.fromEntries(new FormData(form).entries());
+        const response = await fetch("/api/reviews", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          result.innerHTML = `<strong>Error:</strong> ${data.error || "Unknown error"}`;
+          return;
+        }
+        result.innerHTML = `Job started.<br><a href="${data.watch_url}">Open status page</a>`;
+      });
+    </script>
+  </body>
+</html>

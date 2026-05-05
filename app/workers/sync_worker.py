@@ -6,6 +6,7 @@ from app.models.google_oauth import SheetSyncRun
 from app.services.sheet_sync import run_sync_once_for_users
 from app.services.sync_backoff import register_sync_result
 from app.services.sync_queue import release_user_enqueue_lock
+from app.services.workspace_enqueue import enqueue_workspace_context_refresh
 
 
 def process_user_sync_job(user_id: str) -> dict[str, int | str | None]:
@@ -27,6 +28,8 @@ def process_user_sync_job(user_id: str) -> dict[str, int | str | None]:
             rows=result["rows"],
             backoff=backoff,
         )
+        # Refresh per-user workspace context from destination sheet (not source).
+        enqueue_workspace_context_refresh(user_id)
         return {
             "runs": result["runs"],
             "rows": result["rows"],

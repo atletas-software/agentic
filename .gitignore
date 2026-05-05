@@ -9,6 +9,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-*/
 venv/
 env/
 
@@ -16,7 +17,6 @@ env/
 .env
 .env.*
 !.env.example
-!.env.docker.example
 credentials.json
 *.pem
 *.key
@@ -33,3 +33,4 @@ app.db
 
 # Docker overrides
 docker-compose.override.yml
+agents/feedback/data/

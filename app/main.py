@@ -8,6 +8,7 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.admin_auth import router as admin_auth_router
 from app.api.routes.google_integrations import router as google_integrations_router
+from app.api.routes.agents import router as agents_router
 from app.api.routes.sync import router as sync_router
 from app.api.routes.ui import router as ui_router
 from app.api.routes.workflow import router as workflow_router
@@ -15,6 +16,7 @@ from app.core.env_loader import ensure_env_loaded
 from app.db import Base, engine
 from app.models import google_oauth  # noqa: F401
 from app.models import auth as auth_models  # noqa: F401
+from app.models import workspace as workspace_models  # noqa: F401
 from app.services.sync_scheduler import SyncScheduler
 
 ensure_env_loaded()
@@ -84,3 +86,4 @@ app.include_router(admin_router)
 app.include_router(workflow_router)
 app.include_router(google_integrations_router)
 app.include_router(sync_router)
+app.include_router(agents_router)

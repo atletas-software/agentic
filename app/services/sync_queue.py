@@ -7,6 +7,7 @@ from rq import Queue
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 SYNC_QUEUE_NAME = os.getenv("SYNC_QUEUE_NAME", "sheet-sync")
+WORKSPACE_QUEUE_NAME = os.getenv("WORKSPACE_QUEUE_NAME", "agent-workspace")
 
 
 def get_redis() -> Redis:
@@ -15,6 +16,10 @@ def get_redis() -> Redis:
 
 def get_sync_queue() -> Queue:
     return Queue(SYNC_QUEUE_NAME, connection=get_redis())
+
+
+def get_workspace_queue() -> Queue:
+    return Queue(WORKSPACE_QUEUE_NAME, connection=get_redis())
 
 
 def acquire_user_enqueue_lock(user_id: str, ttl_seconds: int = 120) -> bool:
