@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.env_loader import ensure_env_loaded
@@ -23,6 +23,18 @@ engine = create_engine(
     pool_pre_ping=True,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
 )
+
+
+@event.listens_for(engine, "connect")
+def _register_pgvector(dbapi_connection: object, _connection_record: object) -> None:
+    if not DATABASE_URL.startswith("postgresql"):
+        return
+    try:
+        from pgvector.psycopg import register_vector
+
+        register_vector(dbapi_connection)
+    except Exception:
+        pass
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 

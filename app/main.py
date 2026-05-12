@@ -23,6 +23,27 @@ ensure_env_loaded()
 Base.metadata.create_all(bind=engine)
 
 
+def _ensure_player_memory_schema() -> None:
+    """Create player memory tables; pgvector extension only on Postgres."""
+    from app.models.player_memory import PlayerChunk, PlayerDirectoryEntry, PlayerMemorySettings, SqlSyncCursor
+
+    if engine.dialect.name == "postgresql":
+        from sqlalchemy import text as sql_text
+
+        with engine.begin() as conn:
+            conn.execute(sql_text("CREATE EXTENSION IF NOT EXISTS vector"))
+        PlayerChunk.__table__.create(bind=engine, checkfirst=True)
+        SqlSyncCursor.__table__.create(bind=engine, checkfirst=True)
+        PlayerDirectoryEntry.__table__.create(bind=engine, checkfirst=True)
+    PlayerMemorySettings.__table__.create(bind=engine, checkfirst=True)
+    PlayerDirectoryEntry.__table__.create(bind=engine, checkfirst=True)
+
+
+_ensure_player_memory_schema()
+
+from app.api.routes.player_memory import router as player_memory_router  # noqa: E402
+
+
 def _ensure_sync_enabled_column() -> None:
     with engine.begin() as connection:
         inspector = inspect(connection)
@@ -87,3 +108,4 @@ app.include_router(workflow_router)
 app.include_router(google_integrations_router)
 app.include_router(sync_router)
 app.include_router(agents_router)
+app.include_router(player_memory_router)

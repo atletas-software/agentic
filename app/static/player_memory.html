@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Player memory</title>
+    <style>
+      :root {
+        --bg: #f1f5f9;
+        --surface: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --primary: #2563eb;
+        --border: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, Arial, sans-serif;
+        color: var(--text);
+        background: radial-gradient(circle at top left, #dbeafe 0%, #eff6ff 25%, var(--bg) 100%);
+      }
+      .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+      }
+      h1 { margin: 0; font-size: 28px; }
+      .subtle { margin-top: 6px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+      .card .subtle { margin-top: 0; margin-bottom: 12px; }
+      .card .subtle code { font-size: 13px; background: #f1f5f9; padding: 2px 6px; border-radius: 6px; }
+      .nav { display: flex; gap: 8px; flex-wrap: wrap; }
+      .nav a, .nav button {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 8px 12px;
+        background: #fff;
+        color: #0f172a;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 14px;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+      }
+      label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+      input, textarea, select {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        font-size: 14px;
+      }
+      textarea { min-height: 100px; resize: vertical; }
+      .row { display: grid; gap: 12px; margin-bottom: 12px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+      button.primary {
+        background: linear-gradient(180deg, var(--primary), #1d4ed8);
+        color: #fff;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #fff;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      pre {
+        margin: 0;
+        padding: 12px;
+        border-radius: 10px;
+        background: #0b1220;
+        color: #e2e8f0;
+        font-size: 13px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 320px;
+        overflow: auto;
+      }
+      .status { font-size: 14px; color: var(--muted); }
+      #profilesWrap table { width: 100%; border-collapse: collapse; font-size: 14px; }
+      #profilesWrap th, #profilesWrap td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+      #profilesWrap thead { background: #f8fafc; }
+      #profilesWrap tbody tr:hover { background: #f1f5f9; }
+      #profilesWrap tbody tr.selected { background: #e0f2fe; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="topbar">
+        <div>
+          <h1>Player vector memory</h1>
+          <div class="subtle">Chunked embeddings from SQL sync (full or per-player), snapshot context, and completed feedback.</div>
+        </div>
+        <div class="nav">
+          <a href="/admin">Admin Panel</a>
+          <button id="adminLogoutBtn">Admin Logout</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Admin settings</h3>
+        <p class="subtle">Configure external MySQL SQL + Pinecone here. Full sync runs the saved query as-is; per-player sync uses <code>:first_name</code> / <code>:last_name</code> from the profile picker. Values are encrypted at rest.</p>
+        <div class="row">
+          <div>
+            <label for="vectorBackend">Vector backend</label>
+            <input id="vectorBackend" placeholder="pinecone or pgvector" />
+          </div>
+          <div>
+            <label for="sqlDbUrl">SQL DB URL</label>
+            <input id="sqlDbUrl" placeholder="mysql+pymysql://..." />
+          </div>
+          <div>
+            <label for="sqlQuery">SQL Query</label>
+            <textarea id="sqlQuery" rows="5" placeholder="SELECT ... FROM profile ..."></textarea>
+          </div>
+          <div>
+            <label for="watermarkColumn">Watermark column</label>
+            <input id="watermarkColumn" placeholder="updated_at" />
+          </div>
+          <div>
+            <label for="tableNames">Table names (comma separated)</label>
+            <input id="tableNames" placeholder="profile,video,evaluation,club" />
+          </div>
+          <div>
+            <label for="playerKeyColumns">Player key columns</label>
+            <input id="playerKeyColumns" placeholder="player_id" />
+          </div>
+          <div>
+            <label for="pineconeApiKey">Pinecone API key</label>
+            <input id="pineconeApiKey" type="password" autocomplete="off" />
+          </div>
+          <div>
+            <label for="pineconeIndex">Pinecone index</label>
+            <input id="pineconeIndex" />
+          </div>
+          <div>
+            <label for="pineconeNamespace">Pinecone namespace</label>
+            <input id="pineconeNamespace" />
+          </div>
+          <div>
+            <label for="topK">Top K</label>
+            <input id="topK" type="number" value="12" />
+          </div>
+          <div>
+            <label for="contextMaxChars">Context max chars</label>
+            <input id="contextMaxChars" type="number" value="12000" />
+          </div>
+          <div>
+            <label for="chunkMaxTokens">Chunk max tokens</label>
+            <input id="chunkMaxTokens" type="number" value="650" />
+          </div>
+          <div>
+            <label for="chunkOverlapRatio">Chunk overlap ratio</label>
+            <input id="chunkOverlapRatio" type="number" step="0.01" value="0.12" />
+          </div>
+        </div>
+        <div class="actions" style="flex-wrap: wrap; align-items: center; gap: 8px;">
+          <button class="secondary" type="button" id="loadSettingsBtn">Load settings</button>
+          <button class="primary" type="button" id="saveSettingsBtn">Save settings</button>
+          <label class="subtle" for="sqlPreviewLimit" style="margin: 0;">Preview rows</label>
+          <input id="sqlPreviewLimit" type="number" min="1" max="100" value="25" style="width: 4.5rem" />
+          <button class="secondary" type="button" id="testConnBtn">Test SQL connection</button>
+          <button class="secondary" type="button" id="testPineconeBtn">Test Pinecone</button>
+        </div>
+        <p id="settingsStatus" class="status"></p>
+        <pre id="settingsPreview">{}</pre>
+      </div>
+
+      <div class="card">
+        <h3>Status</h3>
+        <p id="memStatus" class="status">Loading…</p>
+        <button class="secondary" type="button" id="reloadStatsBtn">Reload stats</button>
+        <pre id="statsOut">{}</pre>
+      </div>
+
+      <div class="card">
+        <h3>Sync</h3>
+        <p class="subtle">Queues background jobs on the workspace worker (preferred for large data).</p>
+        <div class="actions">
+          <button class="secondary" type="button" id="queueSqlBtn">Queue SQL sync</button>
+          <button class="secondary" type="button" id="queueSnapBtn">Queue snapshot embed</button>
+          <button class="primary" type="button" id="runSqlBtn">Run SQL sync now</button>
+          <button class="primary" type="button" id="runSnapBtn">Run snapshot embed now</button>
+        </div>
+        <p id="syncStatus" class="status"></p>
+      </div>
+
+      <div class="card">
+        <h3>Player SQL sync (MySQL)</h3>
+        <p class="subtle">
+          Search <code>sportal.profile</code>, select a row, then sync that player using the saved SQL with
+          <code>:first_name</code> and <code>:last_name</code>. Re-sync removes only that player’s
+          <code>sql_sync</code> vectors, then re-embeds.
+        </p>
+        <div class="row" style="grid-template-columns: 1fr auto; align-items: end">
+          <div>
+            <label for="profileSearchQ">Search name or email</label>
+            <input id="profileSearchQ" placeholder="e.g. Philip or gmail" />
+          </div>
+          <button class="secondary" type="button" id="loadProfilesBtn">Load profiles</button>
+        </div>
+        <div id="profilesWrap" style="margin-top: 12px; max-height: 280px; overflow: auto"></div>
+        <div class="actions" style="margin-top: 10px">
+          <button class="secondary" type="button" id="queuePlayerSqlBtn">Queue sync for selected</button>
+          <button class="primary" type="button" id="runPlayerSqlBtn">Run sync for selected now</button>
+        </div>
+        <p id="profileSyncStatus" class="status"></p>
+      </div>
+
+      <div class="card">
+        <h3>Quick note (single chunk)</h3>
+        <p class="subtle">Short text stored as one embedding. For long bios or pasted exports, use <strong>Embed player document</strong> below.</p>
+        <div class="row">
+          <div>
+            <label for="pkManual">Player key (PLAYER_KEY_COLUMNS composite)</label>
+            <input id="pkManual" placeholder="e.g. jane doe|blue|10" />
+          </div>
+          <div>
+            <label for="noteText">Text</label>
+            <textarea id="noteText" placeholder="One short note…" rows="4"></textarea>
+          </div>
+        </div>
+        <button class="primary" type="button" id="saveNoteBtn">Save to vector memory</button>
+        <p id="noteStatus" class="status"></p>
+      </div>
+
+      <div class="card">
+        <h3>Embed player document (chunked)</h3>
+        <p class="subtle">Pastes long player context, stats, or exports. Text is split with token overlap, then each chunk is embedded into the vector DB for this player.</p>
+        <div class="row">
+          <div>
+            <label for="pkDoc">Player key</label>
+            <input id="pkDoc" placeholder="same composite key as elsewhere" />
+          </div>
+          <div>
+            <label for="docLabel">Optional label (stored in metadata)</label>
+            <input id="docLabel" placeholder="e.g. trial_day_2026_05_06" />
+          </div>
+        </div>
+        <label for="docText">Player data / narrative</label>
+        <textarea id="docText" rows="12" placeholder="Paste structured notes, season summary, medical clearance text, etc."></textarea>
+        <div class="actions">
+          <button class="primary" type="button" id="embedDocBtn">Chunk &amp; embed to vector DB</button>
+        </div>
+        <p id="docStatus" class="status"></p>
+      </div>
+
+      <div class="card">
+        <h3>Test MCP (Bearer + X-User-Id)</h3>
+        <p class="subtle">
+          Matches how <code>mcp/player_feedback/server.py</code> calls the API: same values as
+          <code>PLAYER_MEMORY_MCP_TOKEN</code> and your numeric user id. Cookies are not sent, so this exercises the automation path.
+        </p>
+        <div class="row">
+          <div>
+            <label for="mcpToken">Bearer token</label>
+            <input id="mcpToken" type="password" autocomplete="off" placeholder="Same as app PLAYER_MEMORY_MCP_TOKEN" />
+          </div>
+          <div>
+            <label for="mcpUserId">User id (numeric)</label>
+            <input id="mcpUserId" placeholder="target user id" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="secondary" type="button" id="mcpStatusBtn">GET status</button>
+          <button class="secondary" type="button" id="mcpStatsBtn">GET stats</button>
+          <button class="secondary" type="button" id="mcpSearchBtn">POST search (uses Search fields below)</button>
+        </div>
+        <pre id="mcpTestOut">{}</pre>
+      </div>
+
+      <div class="card">
+        <h3>Search</h3>
+        <div class="row">
+          <div>
+            <label for="pkSearch">Player key</label>
+            <input id="pkSearch" placeholder="composite key" />
+          </div>
+          <div>
+            <label for="qSearch">Query</label>
+            <input id="qSearch" placeholder="What would you ask about this player?" />
+          </div>
+        </div>
+        <button class="primary" type="button" id="searchBtn">Search memory</button>
+        <pre id="searchOut">[]</pre>
+      </div>
+    </div>
+
+    <script>
+      /**
+       * @param {string} path
+       * @param {RequestInit} options
+       * @param {{ useMcpAuth?: boolean }} auth - Bearer + X-User-Id, no cookies (MCP-style)
+       */
+      async function api(path, options = {}, auth = {}) {
+        const headers = { ...(options.headers || {}) };
+        if (!headers.Accept) headers.Accept = "application/json";
+        if (options.body && !headers["Content-Type"]) {
+          headers["Content-Type"] = "application/json";
+        }
+        if (auth.useMcpAuth) {
+          const tok = document.getElementById("mcpToken").value.trim();
+          const uid = document.getElementById("mcpUserId").value.trim();
+          if (!tok || !uid) {
+            throw new Error("Fill Bearer token and User id for MCP test.");
+          }
+          headers["Authorization"] = `Bearer ${tok}`;
+          headers["X-User-Id"] = uid;
+        }
+        const res = await fetch(path, {
+          credentials: auth.useMcpAuth ? "omit" : "same-origin",
+          ...options,
+          headers,
+        });
+        const text = await res.text();
+        let data;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = { raw: text };
+        }
+        if (!res.ok) {
+          const msg = data?.detail || data?.message || res.statusText;
+          throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+        }
+        return data;
+      }
+
+      async function loadAdminSettings() {
+        const out = document.getElementById("settingsPreview");
+        try {
+          const res = await api("/admin-api/player-memory/settings");
+          const s = res.settings || {};
+          document.getElementById("vectorBackend").value = s.vector_backend || "pinecone";
+          document.getElementById("sqlDbUrl").value = s.sql_database_url || "";
+          document.getElementById("sqlQuery").value = s.sql_query || "";
+          document.getElementById("watermarkColumn").value = s.watermark_column || "";
+          document.getElementById("tableNames").value = (s.table_names || []).join(",");
+          document.getElementById("playerKeyColumns").value = s.player_key_columns || "";
+          document.getElementById("pineconeApiKey").value = s.pinecone_api_key || "";
+          document.getElementById("pineconeIndex").value = s.pinecone_index || "";
+          document.getElementById("pineconeNamespace").value = s.pinecone_namespace || "";
+          document.getElementById("topK").value = s.top_k || 12;
+          document.getElementById("contextMaxChars").value = s.context_max_chars || 12000;
+          document.getElementById("chunkMaxTokens").value = s.chunk_max_tokens || 650;
+          document.getElementById("chunkOverlapRatio").value = s.chunk_overlap_ratio || 0.12;
+          out.textContent = JSON.stringify(res, null, 2);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+      }
+
+      async function loadStatus() {
+        const st = document.getElementById("memStatus");
+        try {
+          const s = await api("/agents/player-memory/status", {}, {});
+          st.textContent = s.memory_enabled
+            ? `Vector memory is active (${s.backend || "configured backend"}).`
+            : "Vector memory is inactive. Configure settings in the admin panel.";
+        } catch (e) {
+          st.textContent = "Could not load status: " + e.message;
+        }
+      }
+
+      async function loadStats() {
+        const out = document.getElementById("statsOut");
+        try {
+          const s = await api("/agents/player-memory/stats", {}, {});
+          out.textContent = JSON.stringify(s, null, 2);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+      }
+
+      document.getElementById("reloadStatsBtn").addEventListener("click", () => {
+        loadStatus();
+        loadStats();
+      });
+
+      document.getElementById("queueSqlBtn").addEventListener("click", async () => {
+        const el = document.getElementById("syncStatus");
+        el.textContent = "Queueing…";
+        try {
+          const r = await api("/agents/player-memory/sync/sql", { method: "POST" });
+          el.textContent = JSON.stringify(r);
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("queueSnapBtn").addEventListener("click", async () => {
+        const el = document.getElementById("syncStatus");
+        el.textContent = "Queueing…";
+        try {
+          const r = await api("/agents/player-memory/sync/snapshot-embed", { method: "POST" });
+          el.textContent = JSON.stringify(r);
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("runSqlBtn").addEventListener("click", async () => {
+        const el = document.getElementById("syncStatus");
+        el.textContent = "Running SQL sync…";
+        try {
+          const r = await api("/agents/player-memory/run/sql-sync", { method: "POST" });
+          el.textContent = JSON.stringify(r);
+          loadStats();
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("runSnapBtn").addEventListener("click", async () => {
+        const el = document.getElementById("syncStatus");
+        el.textContent = "Embedding snapshot diff…";
+        try {
+          const r = await api("/agents/player-memory/run/snapshot-embed", { method: "POST" });
+          el.textContent = JSON.stringify(r);
+          loadStats();
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      let lastProfiles = [];
+      let selectedPlayerId = null;
+
+      function escCell(s) {
+        const d = document.createElement("div");
+        d.textContent = s == null ? "" : String(s);
+        return d.innerHTML;
+      }
+
+      function renderProfilesTable() {
+        const w = document.getElementById("profilesWrap");
+        const profiles = lastProfiles;
+        if (!profiles.length) {
+          w.innerHTML = '<p class="subtle">No rows. Try a different search or leave search empty.</p>';
+          return;
+        }
+        let body = "";
+        for (const p of profiles) {
+          const sel = selectedPlayerId === p.player_id ? " class=\"selected\"" : "";
+          body += `<tr data-id="${p.player_id}"${sel}><td>${p.player_id}</td><td>${escCell(p.first_name)}</td><td>${escCell(p.last_name)}</td><td>${escCell(p.email)}</td></tr>`;
+        }
+        w.innerHTML =
+          "<table><thead><tr><th>ID</th><th>First</th><th>Last</th><th>Email</th></tr></thead><tbody>" +
+          body +
+          "</tbody></table>";
+        w.querySelectorAll("tbody tr").forEach((tr) => {
+          tr.addEventListener("click", () => {
+            selectedPlayerId = Number(tr.dataset.id);
+            renderProfilesTable();
+            document.getElementById("profileSyncStatus").textContent =
+              "Selected player_id=" + selectedPlayerId + " — choose Queue or Run.";
+          });
+        });
+      }
+
+      document.getElementById("loadProfilesBtn").addEventListener("click", async () => {
+        const el = document.getElementById("profileSyncStatus");
+        const q = document.getElementById("profileSearchQ").value.trim();
+        el.textContent = "Loading profiles…";
+        try {
+          const url =
+            "/admin-api/player-memory/external-profiles?limit=100&offset=0&q=" + encodeURIComponent(q);
+          const res = await api(url);
+          lastProfiles = (res.profiles || []).map((p) => ({
+            player_id: Number(p.player_id),
+            first_name: String(p.first_name ?? "").trim(),
+            last_name: String(p.last_name ?? "").trim(),
+            email: String(p.email ?? "").trim(),
+          }));
+          selectedPlayerId = null;
+          renderProfilesTable();
+          el.textContent = `${lastProfiles.length} profile(s) loaded.`;
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      async function selectedPlayerPayload() {
+        if (selectedPlayerId == null) {
+          throw new Error("Select a profile row (click a row) first.");
+        }
+        const p = lastProfiles.find((x) => x.player_id === selectedPlayerId);
+        if (!p) {
+          throw new Error("Selection stale — click Load profiles again.");
+        }
+        return {
+          player_id: p.player_id,
+          first_name: String(p.first_name || "").trim(),
+          last_name: String(p.last_name || "").trim(),
+        };
+      }
+
+      document.getElementById("queuePlayerSqlBtn").addEventListener("click", async () => {
+        const el = document.getElementById("profileSyncStatus");
+        el.textContent = "Queueing…";
+        try {
+          const body = await selectedPlayerPayload();
+          const r = await api("/admin-api/player-memory/sync-sql-player", {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
+          el.textContent = JSON.stringify(r);
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("runPlayerSqlBtn").addEventListener("click", async () => {
+        const el = document.getElementById("profileSyncStatus");
+        el.textContent = "Running player SQL sync…";
+        try {
+          const body = await selectedPlayerPayload();
+          const r = await api("/admin-api/player-memory/run-sql-sync-player", {
+            method: "POST",
+            body: JSON.stringify(body),
+          });
+          el.textContent = JSON.stringify(r);
+          loadStats();
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("saveNoteBtn").addEventListener("click", async () => {
+        const pk = document.getElementById("pkManual").value.trim();
+        const text = document.getElementById("noteText").value.trim();
+        const el = document.getElementById("noteStatus");
+        if (!pk || !text) {
+          el.textContent = "Player key and text are required.";
+          return;
+        }
+        el.textContent = "Saving…";
+        try {
+          const r = await api("/agents/player-memory/manual", {
+            method: "POST",
+            body: JSON.stringify({ player_key: pk, text }),
+          });
+          el.textContent = JSON.stringify(r);
+          loadStats();
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("searchBtn").addEventListener("click", async () => {
+        const pk = document.getElementById("pkSearch").value.trim();
+        const query = document.getElementById("qSearch").value.trim();
+        const out = document.getElementById("searchOut");
+        if (!pk || !query) {
+          out.textContent = "Player key and query required.";
+          return;
+        }
+        try {
+          const r = await api(
+            "/agents/player-memory/search",
+            {
+              method: "POST",
+              body: JSON.stringify({ player_key: pk, query }),
+            },
+            {},
+          );
+          out.textContent = JSON.stringify(r, null, 2);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+      });
+
+      document.getElementById("embedDocBtn").addEventListener("click", async () => {
+        const pk = document.getElementById("pkDoc").value.trim();
+        const text = document.getElementById("docText").value.trim();
+        const label = document.getElementById("docLabel").value.trim();
+        const el = document.getElementById("docStatus");
+        if (!pk || !text) {
+          el.textContent = "Player key and document text are required.";
+          return;
+        }
+        el.textContent = "Chunking and embedding…";
+        try {
+          const r = await api("/agents/player-memory/embed-document", {
+            method: "POST",
+            body: JSON.stringify({ player_key: pk, text, label }),
+          });
+          el.textContent = JSON.stringify(r);
+          loadStats();
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      document.getElementById("mcpStatusBtn").addEventListener("click", async () => {
+        const out = document.getElementById("mcpTestOut");
+        try {
+          const r = await api("/agents/player-memory/status", {}, { useMcpAuth: true });
+          out.textContent = JSON.stringify(r, null, 2);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+      });
+
+      document.getElementById("mcpStatsBtn").addEventListener("click", async () => {
+        const out = document.getElementById("mcpTestOut");
+        try {
+          const r = await api("/agents/player-memory/stats", {}, { useMcpAuth: true });
+          out.textContent = JSON.stringify(r, null, 2);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+      });
+
+      document.getElementById("mcpSearchBtn").addEventListener("click", async () => {
+        const pk = document.getElementById("pkSearch").value.trim();
+        const query = document.getElementById("qSearch").value.trim();
+        const out = document.getElementById("mcpTestOut");
+        if (!pk || !query) {
+          out.textContent = "Fill Player key and Query in the Search section first.";
+          return;
+        }
+        try {
+          const r = await api(
+            "/agents/player-memory/search",
+            {
+              method: "POST",
+              body: JSON.stringify({ player_key: pk, query }),
+            },
+            { useMcpAuth: true },
+          );
+          out.textContent = JSON.stringify(r, null, 2);
+        } catch (e) {
+          out.textContent = e.message;
+        }
+      });
+
+      document.getElementById("adminLogoutBtn").addEventListener("click", async () => {
+        try {
+          await fetch("/admin-auth/logout", { method: "POST", credentials: "same-origin" });
+        } catch {}
+        window.location.href = "/admin/login";
+      });
+
+      document.getElementById("loadSettingsBtn").addEventListener("click", loadAdminSettings);
+      document.getElementById("saveSettingsBtn").addEventListener("click", async () => {
+        const el = document.getElementById("settingsStatus");
+        el.textContent = "Saving settings...";
+        try {
+          const payload = {
+            vector_backend: document.getElementById("vectorBackend").value.trim(),
+            sql_database_url: document.getElementById("sqlDbUrl").value.trim(),
+            sql_query: document.getElementById("sqlQuery").value.trim(),
+            watermark_column: document.getElementById("watermarkColumn").value.trim(),
+            table_names: document.getElementById("tableNames").value.split(",").map((v) => v.trim()).filter(Boolean),
+            player_key_columns: document.getElementById("playerKeyColumns").value.trim(),
+            pinecone_api_key: document.getElementById("pineconeApiKey").value.trim(),
+            pinecone_index: document.getElementById("pineconeIndex").value.trim(),
+            pinecone_namespace: document.getElementById("pineconeNamespace").value.trim(),
+            top_k: Number(document.getElementById("topK").value || 12),
+            context_max_chars: Number(document.getElementById("contextMaxChars").value || 12000),
+            chunk_max_tokens: Number(document.getElementById("chunkMaxTokens").value || 650),
+            chunk_overlap_ratio: Number(document.getElementById("chunkOverlapRatio").value || 0.12),
+          };
+          const res = await api("/admin-api/player-memory/settings", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          });
+          document.getElementById("settingsPreview").textContent = JSON.stringify(res, null, 2);
+          el.textContent = "Saved.";
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+      document.getElementById("testConnBtn").addEventListener("click", async () => {
+        const el = document.getElementById("settingsStatus");
+        el.textContent = "Testing SQL connection...";
+        try {
+          const raw = Number(document.getElementById("sqlPreviewLimit").value);
+          const previewLimit = Math.min(100, Math.max(1, Number.isFinite(raw) ? raw : 25));
+          const res = await api(
+            `/admin-api/player-memory/test-connection?preview_limit=${previewLimit}`,
+            { method: "POST" },
+          );
+          document.getElementById("settingsPreview").textContent = JSON.stringify(res, null, 2);
+          el.textContent = "Connection OK.";
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+      document.getElementById("testPineconeBtn").addEventListener("click", async () => {
+        const el = document.getElementById("settingsStatus");
+        el.textContent = "Testing Pinecone...";
+        try {
+          const res = await api("/admin-api/player-memory/test-pinecone", { method: "POST" });
+          document.getElementById("settingsPreview").textContent = JSON.stringify(res, null, 2);
+          el.textContent = "Pinecone OK.";
+        } catch (e) {
+          el.textContent = e.message;
+        }
+      });
+
+      loadStatus();
+      loadStats();
+      loadAdminSettings();
+    </script>
+  </body>
+</html>

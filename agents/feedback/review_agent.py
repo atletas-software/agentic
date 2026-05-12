@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from agents.feedback.models import VideoFeedbackReview
 from agents.feedback.openai_service import analyze_storyboards
@@ -24,6 +24,10 @@ def build_review(
     player_focus: str,
     analysis_scope: str,
     coaching_focus: str,
+    player_memory_context: str | None = None,
+    shared_context: str | None = None,
+    player_memory_retrieval_debug: dict[str, Any] | None = None,
+    shared_context_sheet_debug: dict[str, Any] | None = None,
 ) -> dict:
     base_dir = DATA_DIR / "reviews" / review_id
     frames_dir = base_dir / "frames"
@@ -43,7 +47,7 @@ def build_review(
     storyboards = create_storyboards(analysis_frames, storyboards_dir)
     prompt_text = (BASE_DIR / "video_feedback_agent_system_prompt.md").read_text(encoding="utf-8")
 
-    review_payload: VideoFeedbackReview = analyze_storyboards(
+    review_payload, llm_debug = analyze_storyboards(
         prompt_text=prompt_text,
         sport=sport,
         player_focus=player_focus,
@@ -53,6 +57,8 @@ def build_review(
         storyboard_paths=storyboards,
         analysis_mode=analysis_mode,
         allowed_timestamps=allowed_timestamps,
+        player_memory_context=player_memory_context,
+        shared_context=shared_context,
     )
 
     review = _to_review_document(
@@ -63,6 +69,12 @@ def build_review(
         analysis_mode=analysis_mode,
         allowed_timestamps=allowed_timestamps,
     )
+    review["generation_debug"] = {
+        "analysis_kind": "video-storyboards",
+        "openai": llm_debug,
+        "shared_context_sheet": shared_context_sheet_debug,
+        "player_memory_vector_retrieval": player_memory_retrieval_debug,
+    }
     save_json(base_dir / "review.json", review)
     return review
 

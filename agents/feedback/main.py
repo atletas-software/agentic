@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from agents.feedback.openai_service import analyze_manual_moment
+from agents.feedback.openai_service import analyze_manual_moment, generate_text_coaching_review
 from agents.feedback.review_agent import build_review
 from agents.feedback.storage import DATA_DIR, ensure_directories, load_json, save_json
 from agents.feedback.video_utils import (
@@ -108,6 +108,81 @@ def _build_manual_context_sequence(
     return context_paths
 
 
+def _run_text_coaching_job(review_id: str, payload: Dict[str, Any]) -> None:
+    """Written coaching only — no ffprobe/ffmpeg (works with Trace/Hudl page URLs)."""
+    _save_job(
+        review_id,
+        {
+            "id": review_id,
+            "status": "running",
+            "video_url": (payload.get("video_url") or "").strip(),
+            "player_focus": payload.get("player_focus", ""),
+            "sport": payload.get("sport", "Soccer"),
+            "mode": "text-only",
+            "error": None,
+        },
+    )
+    try:
+        parsed, llm_debug = generate_text_coaching_review(
+            sport=str(payload.get("sport") or "Soccer"),
+            player_focus=str(payload.get("player_focus") or "Unknown player"),
+            analysis_scope=str(payload.get("analysis_scope") or ""),
+            coaching_focus=str(payload.get("coaching_focus") or ""),
+            video_link_for_reference=str(payload.get("video_url") or ""),
+            player_memory_context=(payload.get("player_memory_context") or "").strip() or None,
+            shared_context=(payload.get("shared_context") or "").strip() or None,
+        )
+        player_focus = str(payload.get("player_focus") or "Player").strip() or "Player"
+        review: Dict[str, Any] = {
+            "id": review_id,
+            "title": f"Coaching notes — {player_focus}",
+            "video_url": str(payload.get("video_url") or "").strip(),
+            "duration_sec": 0.0,
+            "analysis_mode": "text-only",
+            "allowed_timestamps": [],
+            "video_summary": {
+                "sport": str(payload.get("sport") or "Soccer"),
+                "player_focus": player_focus,
+                "duration_sec": 0.0,
+                "analysis_scope": str(payload.get("analysis_scope") or ""),
+            },
+            "overall_assessment": {
+                "strengths": list(parsed.strengths or []),
+                "improvements": list(parsed.improvements or []),
+                "next_focus": list(parsed.next_focus or []),
+            },
+            "markers": [],
+            "coach_narrative": parsed.coach_letter,
+            "generation_debug": {
+                "analysis_kind": "text-only",
+                "openai": llm_debug,
+                "shared_context_sheet": payload.get("shared_context_sheet_debug"),
+                "player_memory_vector_retrieval": payload.get("player_memory_retrieval_debug"),
+            },
+        }
+        save_json(_review_path(review_id), review)
+    except Exception as exc:  # noqa: BLE001
+        job = _load_job(review_id) or {"id": review_id}
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        _save_job(review_id, job)
+        return
+
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "5055"))
+    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    if public_base:
+        review_url = f"{public_base}/review/{review_id}"
+    else:
+        review_url = f"http://{host}:{port}/review/{review_id}"
+    job = _load_job(review_id) or {"id": review_id}
+    job["status"] = "completed"
+    job["error"] = None
+    job["review_url"] = review_url
+    job["review_title"] = review["title"]
+    _save_job(review_id, job)
+
+
 def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
     _save_job(
         review_id,
@@ -128,6 +203,10 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             player_focus=payload.get("player_focus", "Unknown player"),
             analysis_scope=payload.get("analysis_scope", ""),
             coaching_focus=payload.get("coaching_focus", ""),
+            player_memory_context=(payload.get("player_memory_context") or "").strip() or None,
+            shared_context=(payload.get("shared_context") or "").strip() or None,
+            player_memory_retrieval_debug=payload.get("player_memory_retrieval_debug"),
+            shared_context_sheet_debug=payload.get("shared_context_sheet_debug"),
         )
     except Exception as exc:  # noqa: BLE001
         job = _load_job(review_id) or {"id": review_id}
@@ -187,26 +266,46 @@ async def create_review(request: Request) -> JSONResponse:
         form = await request.form()
         payload = {k: str(v) for k, v in form.items()}
 
+    text_only = bool(payload.get("text_only"))
     video_url = (payload.get("video_url") or "").strip()
-    if not video_url:
-        return JSONResponse({"error": "video_url is required"}, status_code=400)
+    player_focus = (payload.get("player_focus") or "").strip()
+    analysis_scope = (payload.get("analysis_scope") or "").strip()
+    coaching_focus = (payload.get("coaching_focus") or "").strip()
+    mem = (payload.get("player_memory_context") or "").strip()
+    shared = (payload.get("shared_context") or "").strip()
+
+    if not text_only and not video_url:
+        return JSONResponse({"error": "video_url is required unless text_only is true"}, status_code=400)
+    if text_only:
+        if not any([video_url, player_focus, analysis_scope, coaching_focus, mem, shared]):
+            return JSONResponse(
+                {
+                    "error": "text_only requires at least one of: video_url, player_focus, analysis_scope, "
+                    "coaching_focus, player_memory_context, or shared_context",
+                },
+                status_code=400,
+            )
 
     review_id = uuid.uuid4().hex[:12]
     review_dir = REVIEWS_DIR / review_id
     review_dir.mkdir(parents=True, exist_ok=True)
 
+    job_payload = {
+        "video_url": video_url,
+        "player_focus": player_focus,
+        "sport": (payload.get("sport") or "Soccer").strip(),
+        "analysis_scope": analysis_scope,
+        "coaching_focus": coaching_focus,
+        "player_memory_context": mem,
+        "shared_context": shared,
+        "text_only": text_only,
+        "player_memory_retrieval_debug": payload.get("player_memory_retrieval_debug"),
+        "shared_context_sheet_debug": payload.get("shared_context_sheet_debug"),
+    }
+    runner = _run_text_coaching_job if text_only else _run_review_job
     thread = threading.Thread(
-        target=_run_review_job,
-        args=(
-            review_id,
-            {
-                "video_url": video_url,
-                "player_focus": (payload.get("player_focus") or "").strip(),
-                "sport": (payload.get("sport") or "Soccer").strip(),
-                "analysis_scope": (payload.get("analysis_scope") or "").strip(),
-                "coaching_focus": (payload.get("coaching_focus") or "").strip(),
-            },
-        ),
+        target=runner,
+        args=(review_id, job_payload),
         daemon=True,
     )
     thread.start()

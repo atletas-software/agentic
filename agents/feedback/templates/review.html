@@ -21,16 +21,29 @@
         --accent-hover: #1e3a5f;
       }
       * { box-sizing: border-box; }
-      html, body { height: 100%; overflow: hidden; }
-      body { margin: 0; background: linear-gradient(160deg, #f4efe6, #dae7f1); color: var(--ink); }
+      html {
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      body {
+        margin: 0;
+        min-height: 100%;
+        min-height: 100dvh;
+        background: linear-gradient(160deg, #f4efe6, #dae7f1);
+        color: var(--ink);
+      }
       button, input, textarea { margin: 0; }
       .workspace {
-        width: 100vw;
-        height: 100vh;
-        max-width: none;
+        width: 100%;
+        max-width: 100%;
+        min-height: 100vh;
+        min-height: 100dvh;
+        height: auto;
         padding: .65rem;
+        padding-bottom: 1.25rem;
         display: grid;
-        grid-template-rows: min-content minmax(0, 1fr);
+        grid-template-rows: min-content minmax(min(44vh, 520px), auto);
         gap: .65rem;
       }
       .workspace-header {
@@ -80,8 +93,6 @@
         font-weight: 500;
         overflow-wrap: anywhere;
         word-break: break-word;
-        max-height: 6.5rem;
-        overflow-y: auto;
         padding: .45rem .5rem;
         padding-right: .35rem;
         background: #f8fafc;
@@ -103,7 +114,7 @@
         box-shadow: 0 2px 4px rgba(15, 23, 42, 0.15);
       }
       .agent-shell {
-        min-height: 0;
+        min-height: min(52vh, 560px);
         display: grid;
         grid-template-columns: 112px minmax(0, 1fr) minmax(300px, 420px);
         gap: .65rem;
@@ -163,7 +174,7 @@
       }
       .video-panel { padding: .65rem; display: grid; grid-template-rows: minmax(0, 1fr) 28px 18px; gap: .45rem; }
       .player-stage { position: relative; min-height: 0; }
-      video { width: 100%; height: 100%; max-height: calc(100vh - 126px); object-fit: contain; border-radius: 14px; background: #000; display: block; }
+      video { width: 100%; height: 100%; max-height: min(68vh, 720px); object-fit: contain; border-radius: 14px; background: #000; display: block; }
       .bbox-layer {
         position: absolute;
         left: 0;
@@ -348,9 +359,46 @@
       .share-row .share-hint { font-size: .72rem; color: var(--muted); line-height: 1.35; }
       .marker-list { display: none; }
       .detail-extra-line { overflow-wrap: anywhere; word-break: break-word; margin-top: .35rem; }
+      .generation-debug {
+        margin: 0;
+        border-radius: 14px;
+        border: 1px solid #c8d4e0;
+        background: #f1f5f9;
+        padding: 0.5rem 0.85rem 0.75rem;
+      }
+      .generation-debug summary {
+        cursor: pointer;
+        font-weight: 800;
+        font-size: 0.82rem;
+        color: var(--ink-soft);
+        list-style: none;
+      }
+      .generation-debug summary::-webkit-details-marker { display: none; }
+      .generation-debug .debug-h {
+        margin: 0.65rem 0 0.2rem;
+        font-size: 0.72rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+      .generation-debug .debug-pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.72rem;
+        line-height: 1.45;
+        overflow-x: auto;
+        max-height: 20rem;
+        margin: 0;
+        padding: 0.45rem 0.5rem;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #1e293b;
+      }
       @media (max-width: 1050px) {
-        html, body { overflow: auto; }
-        .workspace { height: auto; min-height: 100vh; }
+        .workspace { grid-template-rows: min-content minmax(min(38vh, 420px), auto); }
         .agent-shell { grid-template-columns: 1fr; }
         .agent-rail {
           flex-direction: row;
@@ -376,9 +424,63 @@
         <div class="workspace-title">
           <h1>{{ review.title }}</h1>
           <p>{{ review.video_summary.analysis_scope }}</p>
+          {% if review.coach_narrative %}
+          <div style="margin-top:0.75rem;padding:0.65rem 0.75rem;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;color:#14532d;font-size:0.875rem;line-height:1.55;white-space:pre-wrap;">{{ review.coach_narrative }}</div>
+          {% endif %}
+          {% set oa = review.overall_assessment or {} %}
+          {% set st = oa.strengths | default([], true) %}
+          {% set im = oa.improvements | default([], true) %}
+          {% set nf = oa.next_focus | default([], true) %}
+          {% if st or im or nf %}
+          <div style="margin-top:0.65rem;display:grid;gap:0.5rem;font-size:0.8125rem;">
+            {% if st %}<div><strong>Strengths</strong><ul style="margin:0.25rem 0 0 1.1rem;">{% for s in st %}<li>{{ s }}</li>{% endfor %}</ul></div>{% endif %}
+            {% if im %}<div><strong>Areas to enhance</strong><ul style="margin:0.25rem 0 0 1.1rem;">{% for s in im %}<li>{{ s }}</li>{% endfor %}</ul></div>{% endif %}
+            {% if nf %}<div><strong>Next focus</strong><ul style="margin:0.25rem 0 0 1.1rem;">{% for s in nf %}<li>{{ s }}</li>{% endfor %}</ul></div>{% endif %}
+          </div>
+          {% endif %}
         </div>
         <div class="agent-badge">Feedback Agent</div>
       </header>
+      {% set gd = review.get('generation_debug') %}
+      <details class="generation-debug">
+        <summary>AI inputs &amp; vector retrieval</summary>
+        {% if gd %}
+        <p class="small" style="margin:0.35rem 0;">Analysis path: <strong>{{ gd.get('analysis_kind', '—') }}</strong></p>
+        {% set oa = gd.get('openai') or {} %}
+        {% if oa %}
+        <h4 class="debug-h">OpenAI — model</h4>
+        <p class="small mono" style="margin:0">{{ oa.get('model', '—') }}</p>
+        {% if oa.get('system_prompt_file') %}
+        <p class="small" style="margin:0.25rem 0 0;">System prompt file: {{ oa.get('system_prompt_file') }}</p>
+        {% endif %}
+        {% if oa.get('user_message_note') %}
+        <p class="small" style="margin:0.35rem 0;">{{ oa.get('user_message_note') }}</p>
+        {% endif %}
+        <h4 class="debug-h">System message (sent to API)</h4>
+        <pre class="debug-pre">{{ oa.get('system_message', '') }}</pre>
+        <h4 class="debug-h">User message — text part</h4>
+        <pre class="debug-pre">{{ oa.get('user_message_text', '') }}</pre>
+        {% endif %}
+        <h4 class="debug-h">Shared context sheet (org rubric)</h4>
+        <p class="small" style="margin:0 0 0.35rem;">Your org-wide Google Sheet (env <code>FEEDBACK_SHARED_CONTEXT_SPREADSHEET_ID</code> + <code>FEEDBACK_SHARED_CONTEXT_SHEET_GID</code>). On success, the workspace loads the tab as a tab-separated table (truncated to <code>FEEDBACK_SHARED_CONTEXT_MAX_CHARS</code>) and sends it as <code>shared_context</code> in the LLM user message — standards for all players, separate from per-player vector memory.</p>
+        {% set sh = gd.get('shared_context_sheet') %}
+        {% if sh %}
+        <pre class="debug-pre">{{ sh | tojson(indent=2) }}</pre>
+        {% else %}
+        <p class="small">No shared-context sheet log (e.g. review not delegated from the workspace worker, or the org sheet is not configured / failed to load).</p>
+        {% endif %}
+        <h4 class="debug-h">Vector DB retrieval (this job)</h4>
+        <p class="small" style="margin:0 0 0.35rem;">The workspace app builds query text from the job, embeds it with the player-memory embedding model, runs a similarity search filtered by <code>workspace_id</code> and player metadata (Pinecone or pgvector), then sends the formatted chunk text as <code>player_memory_context</code> in the user message above.</p>
+        {% set vm = gd.get('player_memory_vector_retrieval') %}
+        {% if vm %}
+        <pre class="debug-pre">{{ vm | tojson(indent=2) }}</pre>
+        {% else %}
+        <p class="small">No vector retrieval log on this review.</p>
+        {% endif %}
+        {% else %}
+        <p class="small" style="margin:0.35rem 0 0;">This review was saved before transparency fields were added. Run a new feedback job to capture the system prompt, user text, and vector retrieval metadata here.</p>
+        {% endif %}
+      </details>
       <div class="agent-shell">
         <aside class="agent-rail">
           <div class="rail-title">Agents</div>
@@ -388,9 +490,12 @@
         </aside>
         <section class="video-panel">
           <div class="player-stage" id="player-stage">
-            <video id="player" controls preload="metadata" playsinline>
-              <source src="{{ review.video_url }}" type="video/mp4">
+            <video id="player" controls preload="metadata" playsinline {% if not review.video_url %}style="display:none;width:0;height:0;"{% endif %}>
+              {% if review.video_url %}<source src="{{ review.video_url }}" type="video/mp4">{% endif %}
             </video>
+            {% if not review.video_url %}
+            <p class="small" style="padding:0.5rem 0;">Text-only coaching (no video file). Read the coach letter above and assessment below.</p>
+            {% endif %}
             <div class="bbox-layer disabled" id="bbox-layer">
               <div class="bbox-selection" id="bbox-selection"></div>
             </div>

@@ -68,9 +68,30 @@ async def app_settings_ui() -> str:
     return _read_static_page("google_settings.html")
 
 
-@router.get("/app/agents", response_class=HTMLResponse)
-async def app_agents_ui() -> str:
-    return _read_static_page("agents_lab.html")
+@router.get("/app/agents", response_class=HTMLResponse, response_model=None)
+async def app_agents_legacy_redirect() -> RedirectResponse:
+    """Agent Lab moved to admin-only. Old /app/agents bookmarks redirect here."""
+    return RedirectResponse(url="/admin/agents-lab")
+
+
+@router.get("/app/player-memory", response_class=HTMLResponse)
+async def app_player_memory_ui(
+    admin_session_id: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not admin_session_id:
+        return RedirectResponse(url="/admin/login?next=/app/player-memory")
+    try:
+        get_admin_session_context(admin_session_id=admin_session_id, db=db)
+    except HTTPException:
+        return RedirectResponse(url="/admin/login?next=/app/player-memory")
+    return HTMLResponse(content=_read_static_page("player_memory.html"))
+
+
+@router.get("/app/static/player_memory.html")
+async def player_memory_legacy_path_redirect() -> RedirectResponse:
+    """Bookmarks sometimes use /app/static/... but static files are mounted at /static/."""
+    return RedirectResponse(url="/app/player-memory")
 
 
 @router.get("/admin", response_class=HTMLResponse, response_model=None)
@@ -87,13 +108,27 @@ async def admin_ui(
     return HTMLResponse(content=_read_static_page("admin.html"))
 
 
+@router.get("/admin/agents-lab", response_class=HTMLResponse, response_model=None)
+async def admin_agents_lab_ui(
+    admin_session_id: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not admin_session_id:
+        return RedirectResponse(url="/admin/login?next=/admin/agents-lab")
+    try:
+        get_admin_session_context(admin_session_id=admin_session_id, db=db)
+    except HTTPException:
+        return RedirectResponse(url="/admin/login?next=/admin/agents-lab")
+    return HTMLResponse(content=_read_static_page("agents_lab.html"))
+
+
 @router.get("/admin/login", response_class=HTMLResponse, response_model=None)
 async def admin_login_ui(
     next_path: str = Query(default="/admin", alias="next"),
     admin_session_id: str | None = Cookie(default=None),
     db: Session = Depends(get_db),
 ) -> Response:
-    safe_next = next_path if next_path.startswith("/admin") else "/admin"
+    safe_next = next_path if (next_path.startswith("/admin") or next_path.startswith("/app/player-memory")) else "/admin"
     if admin_session_id:
         try:
             get_admin_session_context(admin_session_id=admin_session_id, db=db)

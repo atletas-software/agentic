@@ -16,19 +16,23 @@ def ensure_env_loaded() -> None:
         return
 
     configured = os.getenv("ENV_FILE")
-    env_path = Path(configured) if configured else Path("app/.env")
+    primary = Path(configured) if configured else Path("app/.env")
+    root_env = Path(".env")
     # Keep already-exported runtime env vars (e.g. docker-compose environment)
     # and only fill missing values from dotenv files.
-    loaded = load_dotenv(dotenv_path=env_path, override=False)
-    fallback_loaded = False
-    if not loaded and env_path != Path(".env"):
-        # Backward compatibility for existing setups still using repo-root .env
-        fallback_loaded = load_dotenv(dotenv_path=Path(".env"), override=False)
+    loaded_primary = load_dotenv(dotenv_path=primary, override=False) if primary.exists() else False
+    loaded_root = False
+    if not loaded_primary and primary.resolve() != root_env.resolve() and root_env.exists():
+        # Backward compatibility: only repo-root .env (no app/.env)
+        loaded_root = load_dotenv(dotenv_path=root_env, override=False)
+    elif primary.exists() and root_env.exists() and primary.resolve() != root_env.resolve():
+        # Merge repo-root .env after app/.env — fills POSTGRES_* etc. without overriding app keys.
+        loaded_root = load_dotenv(dotenv_path=root_env, override=False)
     info(
         "env_loaded",
-        env_file=str(env_path),
-        loaded=loaded,
-        fallback_env_file=".env",
-        fallback_loaded=fallback_loaded,
+        env_file=str(primary),
+        loaded=loaded_primary,
+        fallback_env_file=str(root_env),
+        fallback_loaded=loaded_root,
     )
     _loaded = True

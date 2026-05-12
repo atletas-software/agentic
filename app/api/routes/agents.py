@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -21,11 +21,21 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 class FeedbackReviewRequest(BaseModel):
-    video_url: str = Field(..., min_length=4)
+    video_url: str = Field(default="", max_length=8000)
     player_focus: str = ""
     sport: str = "Soccer"
     analysis_scope: str = ""
     coaching_focus: str = ""
+    player_key: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    text_only: bool = False
+
+    @model_validator(mode="after")
+    def _video_or_text_only(self) -> "FeedbackReviewRequest":
+        if not self.text_only and len((self.video_url or "").strip()) < 4:
+            raise ValueError("video_url is required when text_only is false")
+        return self
 
 
 @router.post("/workspace/refresh-context")

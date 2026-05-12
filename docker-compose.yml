@@ -1,3 +1,5 @@
+# Compose reads repo-root `.env` for ${POSTGRES_PASSWORD} etc.
+# API/worker load `app/.env` inside containers; runtime URLs below override hostnames for in-cluster networking.
 services:
   api:
     build:
@@ -111,7 +113,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: sheet-mcp-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}

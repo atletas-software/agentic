@@ -41,9 +41,45 @@ Typical flow when everything is enabled:
 2. After a successful sync, the worker may enqueue a **workspace context** job (destination sheet snapshot).
 3. When a **feedback** `AgentJob` is created in the platform, the worker calls `FEEDBACK_AGENT_BASE_URL` (if set) with `POST /api/reviews` and polls until the agent reports completion.
 
+## Configuration (local and Docker use the same files)
+
+| File | Purpose |
+|------|--------|
+| **`app/.env`** | Primary application config: OAuth, `DATABASE_URL`, `REDIS_URL`, player memory, destination sheet, etc. Used when you run `make run-api` / `make run-worker` locally and **mounted into API/worker containers** when using Compose. |
+| **`.env`** (repo root, optional) | Copy from **`.env.example`** at the repo root. Docker Compose reads this automatically for **interpolation** in `docker-compose.yml` (`POSTGRES_PASSWORD`, `POSTGRES_DB`, ports). Keep Postgres credentials **consistent** with the user/password in `app/.env`’s `DATABASE_URL` when your local URL points at the same Postgres (e.g. `localhost:5432`). |
+| **`agents/.env`** | Feedback agent secrets (`OPENAI_API_KEY`, etc.). Used by the feedback container via `env_file`; mirror variables locally when running `make run-feedback`. |
+
+At runtime, the platform loads **`app/.env` first**, then merges **repo-root `.env`** only for keys that are still unset (`override=False`). Variables injected by Compose (`DATABASE_URL`, `REDIS_URL`, …) are never overwritten by dotenv.
+
+Inside Compose, **`docker-compose.yml`** overrides `DATABASE_URL`, `REDIS_URL`, `FEEDBACK_AGENT_BASE_URL`, and the destination credentials path so containers talk to `postgres`, `redis`, and `feedback-agent` by service name. Defaults match **`DATABASE_URL_DOCKER`**, **`REDIS_URL_DOCKER`**, etc., so you usually **do not** duplicate those in `.env` unless you customize clusters.
+
+Player memory SQL/vector runtime settings are now managed from the admin panel (`/app/player-memory`) and persisted encrypted in the DB. Keep `PLAYER_MEMORY_SETTINGS_MASTER_KEY` set in `app/.env`; `PLAYER_CONTEXT_*`, `PINECONE_*`, and chunk/retrieval values in env act as bootstrap defaults until admin settings are saved.
+
+## Run locally (venv)
+
+Prerequisites: **Python 3.11+**, **Redis** (e.g. `brew services start redis`), and **`app/.env`** from `app/.env.example`.
+
+- **General platform dev:** SQLite works if `DATABASE_URL` is omitted (defaults to `sqlite:///./app.db`).
+- **Player vector memory:** PostgreSQL with **`pgvector`** (`CREATE EXTENSION vector`). Not available on SQLite.
+
+```bash
+make setup-app
+make setup-agents   # optional, for feedback agent
+cp app/.env.example app/.env   # then edit
+make run-local       # prints reminder: terminals for api / worker / feedback
+```
+
+Terminals:
+
+```bash
+make run-api
+make run-worker
+make run-feedback    # optional
+```
+
 ## Local development: platform only
 
-Prerequisites: **Python 3.11+** recommended (matches Docker), **Redis** running, and a database (Postgres or omit `DATABASE_URL` to use default SQLite `app.db`).
+Prerequisites: **Python 3.11+** recommended, **Redis** running, and a database (Postgres or omit `DATABASE_URL` to use default SQLite `app.db`).
 
 Quick setup with `Makefile`:
 
@@ -115,29 +151,26 @@ In the **platform** `app/.env` (used by the API and worker), set:
 FEEDBACK_AGENT_BASE_URL=http://127.0.0.1:5055
 ```
 
-Optional: run the feedback agent in Docker instead (from repo root):
+For local feedback setup, prefer **`make run-feedback`**; Compose can run the same agent image instead if you use **`make run-all`**.
+
+## Run with Docker (same `app/.env` + optional repo-root `.env`)
+
+1) Copy templates:
 
 ```bash
-docker build -f agents/feedback/Dockerfile -t athlete-feedback .
-docker run --rm -p 5055:5055 -e OPENAI_API_KEY=sk-... -e DATA_DIR=/app/data athlete-feedback
+cp app/.env.example app/.env
+cp .env.example .env        # repo root — supplies POSTGRES_* for compose interpolation
 ```
 
-Then point `FEEDBACK_AGENT_BASE_URL` at `http://127.0.0.1:5055` (or the Docker host URL).
+Edit **`app/.env`** with OAuth, secrets, and (for host-side tools) `DATABASE_URL` pointing at `localhost` if you use the compose Postgres port mapping. Align **`POSTGRES_PASSWORD`** in repo-root **`.env`** with the password in that URL.
 
-## Run with Docker (Production)
-
-1) Update `app/.env` with production values:
-
-- `POSTGRES_PASSWORD` -> set a strong password
-- `DATABASE_URL_DOCKER` -> keep aligned with Postgres values
-- `REDIS_URL_DOCKER` -> usually `redis://redis:6379/0`
-- `GOOGLE_CREDENTIALS_FILE_HOST` -> host path to your service-account JSON
-- `WEB_CONCURRENCY` -> tune based on CPU (start with `2`)
+Optional: **`agents/.env`** from `agents/.env.example` for the feedback container.
 
 2) Start the full stack:
 
 ```bash
-docker compose up -d --build
+make run-all
+# equivalent: make docker-up   →  docker compose up -d --build
 ```
 
 This starts:
@@ -147,12 +180,6 @@ This starts:
 - `feedback-agent` (FastAPI feedback service on `:5055`)
 - `redis`
 - `postgres`
-
-Quick start shortcut:
-
-```bash
-make run-all
-```
 
 3) Verify deployment:
 
@@ -168,7 +195,7 @@ Health check endpoint:
 Stop stack:
 
 ```bash
-docker compose down
+make docker-down
 ```
 
 ### Production safety notes
@@ -177,10 +204,11 @@ docker compose down
 - `credentials.json` is mounted read-only into containers at `/run/secrets/google-credentials.json`.
 - Use a managed Postgres/Redis and a secret manager in cloud production when possible.
 
-Open backend UI pages:
+Open backend UI pages (local or Docker):
 - [http://localhost:8000/app/connect](http://localhost:8000/app/connect)
 - [http://localhost:8000/app/sheets](http://localhost:8000/app/sheets)
 - [http://localhost:8000/app/agents](http://localhost:8000/app/agents)
+- [http://localhost:8000/app/player-memory](http://localhost:8000/app/player-memory) (admin login required)
 - [http://localhost:8000/app/sheets/details?spreadsheet_id=YOUR_ID](http://localhost:8000/app/sheets/details?spreadsheet_id=YOUR_ID)
 
 ## Environment variables

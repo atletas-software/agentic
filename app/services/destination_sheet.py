@@ -10,17 +10,43 @@ from googleapiclient.discovery import build
 from app.core.logger import info
 
 
+def _resolve_credentials_file(path: str) -> str:
+    raw = (path or "").strip()
+    if not raw:
+        return "credentials.json"
+    if os.path.isdir(raw):
+        candidate = os.path.join(raw, "credentials.json")
+        if os.path.isfile(candidate):
+            return candidate
+        json_files = [name for name in os.listdir(raw) if name.lower().endswith(".json")]
+        if json_files:
+            json_files.sort()
+            return os.path.join(raw, json_files[0])
+    return raw
+
+
 class DestinationSheetService:
     def __init__(self) -> None:
         credentials_file = os.getenv("DESTINATION_GOOGLE_CREDENTIALS_FILE", "credentials.json")
         self._spreadsheet_id = os.getenv("DESTINATION_SPREADSHEET_ID", "")
         self._enabled = bool(self._spreadsheet_id)
         if self._enabled:
-            creds = service_account.Credentials.from_service_account_file(
-                credentials_file,
-                scopes=["https://www.googleapis.com/auth/spreadsheets"],
-            )
-            self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+            resolved_credentials_file = _resolve_credentials_file(credentials_file)
+            try:
+                creds = service_account.Credentials.from_service_account_file(
+                    resolved_credentials_file,
+                    scopes=["https://www.googleapis.com/auth/spreadsheets"],
+                )
+                self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+            except Exception as exc:  # noqa: BLE001
+                self._service = None
+                self._enabled = False
+                info(
+                    "destination_sheet_service_disabled",
+                    reason="credentials_load_failed",
+                    credentials_file=resolved_credentials_file,
+                    error=str(exc),
+                )
         else:
             self._service = None
         info(
@@ -50,6 +76,9 @@ class DestinationSheetService:
             for s in resp.get("sheets", [])
             if s.get("properties", {}).get("title")
         ]
+
+    def list_sheet_titles(self) -> list[str]:
+        return self._sheet_titles()
 
     def _sheet_id(self, sheet_name: str) -> int:
         if not self.is_enabled():

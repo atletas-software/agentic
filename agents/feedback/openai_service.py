@@ -3,10 +3,10 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents.feedback.models import VideoFeedbackReview
 
@@ -53,6 +53,18 @@ def _encode_image(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
+_DEBUG_STORE_MAX = 48_000
+
+
+def _truncate_for_debug_text(text: str, max_chars: int = _DEBUG_STORE_MAX) -> str:
+    """Keep review.json bounded; full prompts may include long shared_context / memory."""
+    text = text or ""
+    if len(text) <= max_chars:
+        return text
+    head = max_chars - 100
+    return text[:head] + f"\n\n... [truncated for storage — total length {len(text)} characters]\n"
+
+
 def analyze_storyboards(
     *,
     prompt_text: str,
@@ -64,7 +76,9 @@ def analyze_storyboards(
     storyboard_paths: list[Path],
     analysis_mode: str,
     allowed_timestamps: Optional[List[float]] = None,
-) -> VideoFeedbackReview:
+    player_memory_context: Optional[str] = None,
+    shared_context: Optional[str] = None,
+) -> tuple[VideoFeedbackReview, dict[str, Any]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is missing. Add it to your environment or .env file.")
@@ -95,6 +109,21 @@ def analyze_storyboards(
             "- Return JSON only through the structured schema.",
         ]
     )
+    org = (shared_context or "").strip()
+    if org:
+        user_text += (
+            "\n\nShared organization coaching reference (same for all players; "
+            "use as rubric, standards, and vocabulary — not as facts about this individual unless "
+            "the video clearly supports it):\n"
+            + org
+        )
+    mem = (player_memory_context or "").strip()
+    if mem:
+        user_text += (
+            "\n\nRetrieved player-specific memory from prior sessions and records "
+            "(ground truth for continuity about this player; do not contradict without evidence):\n"
+            + mem
+        )
 
     content = [{"type": "input_text", "text": user_text}]
     for path in storyboard_paths:
@@ -116,13 +145,130 @@ def analyze_storyboards(
     parsed = response.output_parsed
     if parsed is None:
         raise RuntimeError("The model did not return a parsed review payload.")
-    return parsed
+    llm_debug: dict[str, Any] = {
+        "model": model,
+        "system_prompt_file": "video_feedback_agent_system_prompt.md",
+        "system_message": _truncate_for_debug_text(prompt_text),
+        "user_message_text": _truncate_for_debug_text(user_text),
+        "user_message_note": (
+            "The live API request also attached "
+            f"{len(storyboard_paths)} storyboard JPEG(s) as input_image parts after this text (not stored here)."
+        ),
+        "storyboard_image_count": len(storyboard_paths),
+    }
+    return parsed, llm_debug
 
 
 def _format_allowed_timestamps(allowed_timestamps: Optional[List[float]]) -> str:
     if not allowed_timestamps:
         return "none provided"
     return ", ".join(f"{timestamp:.2f}" for timestamp in allowed_timestamps)
+
+
+class TextCoachingStructured(BaseModel):
+    """Structured text-only coaching (no video frames)."""
+
+    coach_letter: str = Field(
+        description=(
+            "2–4 short paragraphs as a supportive youth coach: acknowledge effort, name 1–2 bright spots, "
+            "then prioritize what to sharpen next with clear, encouraging language. Address the player (or parent) directly."
+        )
+    )
+    strengths: List[str] = Field(
+        default_factory=list,
+        description="3–6 short bullet phrases grounded in the supplied context.",
+    )
+    improvements: List[str] = Field(
+        default_factory=list,
+        description="3–7 concrete development areas; use action verbs (e.g. scan before receiving, open body shape).",
+    )
+    next_focus: List[str] = Field(
+        description="1–3 priority themes for upcoming training sessions.",
+        min_length=1,
+        max_length=3,
+    )
+
+
+def generate_text_coaching_review(
+    *,
+    sport: str,
+    player_focus: str,
+    analysis_scope: str,
+    coaching_focus: str,
+    video_link_for_reference: str = "",
+    player_memory_context: Optional[str] = None,
+    shared_context: Optional[str] = None,
+) -> tuple[TextCoachingStructured, dict[str, Any]]:
+    """
+    Coach-style written feedback using sheet/game scope + optional vector memory + optional org rubric.
+    No video or ffprobe — safe for Trace/Hudl page URLs that are not direct media files.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your environment or .env file.")
+
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    client = OpenAI(api_key=api_key)
+
+    system = (
+        "You are an experienced youth soccer coach writing feedback for a player and their family. "
+        "You do NOT have video — only written context. Never claim you watched a video or saw specific clips. "
+        "Ground every statement in the provided context blocks; if context is thin, say so briefly and stay general but still useful. "
+        "Tone: professional, warm, specific, and developmental (what to enhance next and how). "
+        "Distinguish: (1) organization-wide standards from SHARED CONTEXT vs (2) player-specific notes from PLAYER MEMORY — "
+        "apply standards without treating them as private facts about this athlete unless memory supports it."
+    )
+
+    parts: list[str] = [
+        "Write text-only coaching feedback using the following inputs.",
+        f"Sport: {sport or 'Soccer'}",
+        f"Player / role focus: {player_focus or 'the athlete'}",
+        f"Game / session / sheet context: {analysis_scope or '(none supplied)'}",
+        f"Coaching priorities requested: {coaching_focus or 'balanced technical and tactical growth'}",
+    ]
+    link = (video_link_for_reference or "").strip()
+    if link:
+        parts.append(
+            "Optional viewing link (may be a team app page, not a direct video file — do not assume you viewed it): "
+            + link
+        )
+    org = (shared_context or "").strip()
+    if org:
+        parts.extend(
+            [
+                "",
+                "--- SHARED CONTEXT (club/program standards for all players; use as rubric) ---",
+                org[:120_000],
+            ]
+        )
+    mem = (player_memory_context or "").strip()
+    if mem:
+        parts.extend(
+            [
+                "",
+                "--- PLAYER MEMORY (retrieved notes about this player only; treat as higher-truth for personalization) ---",
+                mem[:120_000],
+            ]
+        )
+    user_text = "\n".join(parts)
+
+    response = client.responses.parse(
+        model=model,
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": [{"type": "input_text", "text": user_text}]},
+        ],
+        text_format=TextCoachingStructured,
+    )
+    parsed = response.output_parsed
+    if parsed is None:
+        raise RuntimeError("The model did not return parsed text coaching.")
+    llm_debug: dict[str, Any] = {
+        "model": model,
+        "system_message": _truncate_for_debug_text(system),
+        "user_message_text": _truncate_for_debug_text(user_text),
+    }
+    return parsed, llm_debug
 
 
 def locate_player_in_frame(

@@ -14,3 +14,9 @@ psycopg[binary]==3.2.9
 redis==5.0.8
 rq==1.16.2
 passlib[bcrypt]==1.7.4
+pgvector==0.3.6
+openai==1.76.0
+tiktoken==0.9.0
+cryptography==42.0.8
+pinecone==5.4.2
+PyMySQL==1.1.1
