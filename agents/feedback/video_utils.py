@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -113,6 +114,102 @@ def create_storyboards(frame_assets: list[FrameAsset], output_dir: Path) -> list
         pages.append(page_path)
 
     return pages
+
+
+def enrich_highlight_temporal_context(
+    video_url: str,
+    frame_assets: list[FrameAsset],
+    duration_sec: float,
+    output_dir: Path,
+    *,
+    window_sec: float = 2.0,
+    step_sec: float = 1.0,
+    max_frames: int = 48,
+) -> list[FrameAsset]:
+    """
+    Around each frame with a detected highlight circle, sample additional full-frame
+    timestamps from T-window .. T+window (step_sec), so the model sees pre/post context.
+
+    Disabled when window_sec <= 0. Caps total frames by dropping non-circle extras first.
+    """
+    if window_sec <= 0 or duration_sec <= 0 or not frame_assets:
+        return frame_assets
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    eps = 0.14
+    out: list[FrameAsset] = list(frame_assets)
+
+    def has_near(ts: float, pool: list[FrameAsset]) -> bool:
+        return any(abs(a.timestamp_sec - ts) < eps for a in pool)
+
+    steps = int(round((2 * window_sec) / max(step_sec, 0.25))) + 1
+    offsets: list[float] = []
+    for i in range(steps):
+        off = round(-window_sec + i * step_sec, 2)
+        if abs(off) <= 1e-6:
+            continue
+        offsets.append(off)
+
+    for anchor in frame_assets:
+        if not anchor.circle_found:
+            continue
+        t0 = float(anchor.timestamp_sec)
+        for off in offsets:
+            t = round(max(0.0, min(duration_sec - 0.05, t0 + off)), 2)
+            if has_near(t, out):
+                continue
+            safe = f"{t:.2f}".replace(".", "_")
+            path = output_dir / f"context_{safe}.jpg"
+            extract_frame_at_timestamp(video_url, t, path, frame_width=960)
+            _stamp_timestamp(path, t)
+            out.append(FrameAsset(timestamp_sec=t, image_path=path, circle_found=False))
+
+    out.sort(key=lambda a: a.timestamp_sec)
+    if len(out) <= max_frames:
+        return out
+
+    circles = [a for a in out if a.circle_found]
+    others = [a for a in out if not a.circle_found]
+    budget = max(0, max_frames - len(circles))
+    if budget >= len(others):
+        return circles + others
+    step = max(1, len(others) // budget)
+    picked = [others[i] for i in range(0, len(others), step)][:budget]
+    merged = circles + picked
+    merged.sort(key=lambda a: a.timestamp_sec)
+    return merged
+
+
+def group_frames_by_highlight_anchor(
+    frames: list[FrameAsset],
+    *,
+    window_sec: float,
+) -> list[tuple[float, list[FrameAsset]]]:
+    """
+    Group stills per detected highlight (circle_found): all frames with timestamps in
+    [T - window_sec, T + window_sec]. Anchors are unique circle timestamps (sorted).
+    """
+    if window_sec <= 0 or not frames:
+        return []
+    anchors = sorted({round(f.timestamp_sec, 2) for f in frames if f.circle_found})
+    if not anchors:
+        return []
+    eps = 0.25
+    groups: list[tuple[float, list[FrameAsset]]] = []
+    for T in anchors:
+        lo, hi = T - window_sec - eps, T + window_sec + eps
+        grp = [f for f in frames if lo <= f.timestamp_sec <= hi]
+        grp.sort(key=lambda x: x.timestamp_sec)
+        seen: set[Path] = set()
+        uniq: list[FrameAsset] = []
+        for f in grp:
+            if f.image_path in seen:
+                continue
+            seen.add(f.image_path)
+            uniq.append(f)
+        if uniq:
+            groups.append((T, uniq))
+    return groups
 
 
 def extract_circled_frames(

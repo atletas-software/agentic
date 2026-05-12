@@ -9,6 +9,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from agents.feedback.models import VideoFeedbackReview
+from agents.feedback.video_utils import FrameAsset
 
 
 class PlayerLocalization(BaseModel):
@@ -65,6 +66,132 @@ def _truncate_for_debug_text(text: str, max_chars: int = _DEBUG_STORE_MAX) -> st
     return text[:head] + f"\n\n... [truncated for storage — total length {len(text)} characters]\n"
 
 
+def _sample_window_frames(grp: list[FrameAsset], max_n: int) -> list[FrameAsset]:
+    if max_n <= 0 or not grp:
+        return []
+    if len(grp) <= max_n:
+        return grp
+    n = len(grp)
+    idxs = [round(i * (n - 1) / (max_n - 1)) for i in range(max_n)]
+    return [grp[int(i)] for i in idxs]
+
+
+def summarize_highlight_windows_for_feedback(
+    *,
+    windows: list[tuple[float, list[FrameAsset]]],
+    player_focus: str,
+    sport: str,
+    window_sec: float,
+    max_windows: int = 8,
+    max_images_per_window: int = 5,
+    max_images_total: int = 24,
+) -> tuple[str, dict[str, Any]]:
+    """
+    One vision call: chronological stills around each highlight (±window_sec) with labels.
+    Returns combined markdown-style text for the main feedback model + debug metadata.
+    """
+    debug: dict[str, Any] = {
+        "outcome": "skipped",
+        "window_sec": window_sec,
+        "max_windows_config": max_windows,
+        "max_images_total_config": max_images_total,
+    }
+    if not windows:
+        debug["reason"] = "no_highlight_windows"
+        return "", debug
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        debug["reason"] = "OPENAI_API_KEY_missing"
+        return "", debug
+
+    model = (os.getenv("VIDEO_HIGHLIGHT_SUMMARY_MODEL") or "gpt-4o-mini").strip()
+    client = OpenAI(api_key=api_key)
+
+    trimmed = windows[:max_windows]
+    to_process: list[tuple[float, list[FrameAsset], list[FrameAsset]]] = []
+    img_budget = 0
+    for T, grp in trimmed:
+        sampled = _sample_window_frames(grp, max_images_per_window)
+        if not sampled:
+            continue
+        if img_budget + len(sampled) > max_images_total:
+            sampled = sampled[: max(0, max_images_total - img_budget)]
+        if not sampled:
+            continue
+        to_process.append((T, sampled, grp))
+        img_budget += len(sampled)
+        if img_budget >= max_images_total:
+            break
+
+    meta_windows: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"Sport: {sport or 'Soccer'}. Player focus: {player_focus or 'the circled athlete'}.\n"
+                f"Each block is labeled with highlight time T (seconds). Images are chronological stills from "
+                f"about T−{window_sec:g}s through T+{window_sec:g}s (red circle marks the highlight frame when present).\n"
+                "For EVERY block, output markdown:\n"
+                "### Highlight T=<seconds>s\n"
+                "- Pre (before the moment): positioning / pressure / options (1–2 bullets)\n"
+                "- Event: what happens at the highlight (1–2 bullets)\n"
+                "- Post: immediate consequence / next read (1–2 bullets)\n"
+                "Be specific and tactical; no generic filler. If a frame is unclear, say so briefly.\n"
+                "Separate each highlight block with a line containing only ---"
+            ),
+        }
+    ]
+    for T, sampled, full_grp in to_process:
+        meta_windows.append(
+            {
+                "anchor_sec": T,
+                "frame_seconds": [round(f.timestamp_sec, 2) for f in full_grp],
+                "frames_sent_to_captioner": len(sampled),
+            }
+        )
+        parts.append({"type": "text", "text": f"--- Highlight T={T:.2f}s ({len(sampled)} frame(s)) ---"})
+        for f in sampled:
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{_encode_image(f.image_path)}"},
+                }
+            )
+
+    img_count = sum(len(s) for _, s, _ in to_process)
+    debug["windows_captioned"] = len(to_process)
+    debug["images_sent_to_captioner"] = img_count
+    debug["model"] = model
+
+    if not to_process:
+        debug["outcome"] = "skipped"
+        debug["reason"] = "no_images_after_sampling"
+        return "", debug
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You write concise elite football tactical summaries from still frames only.",
+                },
+                {"role": "user", "content": parts},
+            ],
+            max_tokens=int(os.getenv("VIDEO_HIGHLIGHT_SUMMARY_MAX_TOKENS", "2500")),
+        )
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        debug["outcome"] = "error"
+        debug["error"] = str(exc)
+        return "", debug
+
+    debug["outcome"] = "success" if text else "empty"
+    debug["chars_returned"] = len(text)
+    debug["windows_detail"] = meta_windows
+    return text, debug
+
+
 def analyze_storyboards(
     *,
     prompt_text: str,
@@ -78,6 +205,7 @@ def analyze_storyboards(
     allowed_timestamps: Optional[List[float]] = None,
     player_memory_context: Optional[str] = None,
     shared_context: Optional[str] = None,
+    highlight_window_narrative: Optional[str] = None,
 ) -> tuple[VideoFeedbackReview, dict[str, Any]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -86,16 +214,27 @@ def analyze_storyboards(
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     client = OpenAI(api_key=api_key)
 
-    user_text = "\n".join(
+    hw = (highlight_window_narrative or "").strip()
+    prefix_lines: list[str] = [
+        "Analyze this soccer player review video from storyboard images.",
+        f"Sport: {sport}",
+        f"Player focus: {player_focus or 'Unknown player'}",
+        f"Video duration in seconds: {duration_sec:.2f}",
+        f"Analysis scope: {analysis_scope or 'Review the full visible video.'}",
+        f"Coaching focus: {coaching_focus or 'Balanced technical and tactical feedback.'}",
+        f"Analysis mode: {analysis_mode}",
+        f"Allowed feedback timestamps in seconds: {_format_allowed_timestamps(allowed_timestamps)}",
+    ]
+    if hw:
+        prefix_lines.extend(
+            [
+                "",
+                "--- HIGHLIGHT WINDOW NARRATIVES (separate vision pass on ±2s stills per red-circle detection; tactical text to combine with storyboards) ---",
+                hw[:25_000],
+            ]
+        )
+    prefix_lines.extend(
         [
-            "Analyze this soccer player review video from storyboard images.",
-            f"Sport: {sport}",
-            f"Player focus: {player_focus or 'Unknown player'}",
-            f"Video duration in seconds: {duration_sec:.2f}",
-            f"Analysis scope: {analysis_scope or 'Review the full visible video.'}",
-            f"Coaching focus: {coaching_focus or 'Balanced technical and tactical feedback.'}",
-            f"Analysis mode: {analysis_mode}",
-            f"Allowed feedback timestamps in seconds: {_format_allowed_timestamps(allowed_timestamps)}",
             "",
             "Important limits:",
             "- You are seeing storyboard frames, not raw motion video.",
@@ -107,25 +246,38 @@ def analyze_storyboards(
             "- If motion detail is uncertain, say less and keep the note conservative.",
             "- Use the timestamp labels visible in the frames to anchor your feedback moments.",
             "- Return JSON only through the structured schema.",
+            "",
+            "Reasoning order: (1) Interpret storyboard images together with HIGHLIGHT WINDOW NARRATIVES (if any).",
+            "(2) Then apply PLAYER MEMORY (if present) for this athlete's continuity.",
+            "(3) Then align language and priorities with SHARED CONTEXT rubric (if present).",
         ]
     )
-    org = (shared_context or "").strip()
-    if org:
-        user_text += (
-            "\n\nShared organization coaching reference (same for all players; "
-            "use as rubric, standards, and vocabulary — not as facts about this individual unless "
-            "the video clearly supports it):\n"
-            + org
-        )
-    mem = (player_memory_context or "").strip()
-    if mem:
-        user_text += (
-            "\n\nRetrieved player-specific memory from prior sessions and records "
-            "(ground truth for continuity about this player; do not contradict without evidence):\n"
-            + mem
-        )
+    user_text_prefix = "\n".join(prefix_lines)
 
-    content = [{"type": "input_text", "text": user_text}]
+    mem = (player_memory_context or "").strip()
+    org = (shared_context or "").strip()
+    post_blocks: list[str] = [
+        "Additional context blocks below — use them only after you have grounded judgments in the storyboard images.",
+    ]
+    if mem:
+        post_blocks.extend(
+            [
+                "",
+                "--- PLAYER MEMORY (this player only; continuity — do not contradict clear video evidence) ---",
+                mem,
+            ]
+        )
+    if org:
+        post_blocks.extend(
+            [
+                "",
+                "--- SHARED CONTEXT (organization-wide rubric / vocabulary for all players) ---",
+                org,
+            ]
+        )
+    user_text_suffix = "\n".join(post_blocks) if (mem or org) else ""
+
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text_prefix}]
     for path in storyboard_paths:
         content.append(
             {
@@ -133,6 +285,8 @@ def analyze_storyboards(
                 "image_url": f"data:image/jpeg;base64,{_encode_image(path)}",
             }
         )
+    if user_text_suffix:
+        content.append({"type": "input_text", "text": user_text_suffix})
 
     response = client.responses.parse(
         model=model,
@@ -145,14 +299,16 @@ def analyze_storyboards(
     parsed = response.output_parsed
     if parsed is None:
         raise RuntimeError("The model did not return a parsed review payload.")
+    bridge = f"\n\n--- [{len(storyboard_paths)} storyboard image(s) sent to the model between the two text blocks] ---\n\n"
+    user_text_for_debug = user_text_prefix + bridge + user_text_suffix
     llm_debug: dict[str, Any] = {
         "model": model,
         "system_prompt_file": "video_feedback_agent_system_prompt.md",
         "system_message": _truncate_for_debug_text(prompt_text),
-        "user_message_text": _truncate_for_debug_text(user_text),
+        "user_message_text": _truncate_for_debug_text(user_text_for_debug),
         "user_message_note": (
-            "The live API request also attached "
-            f"{len(storyboard_paths)} storyboard JPEG(s) as input_image parts after this text (not stored here)."
+            "User message is split: (1) instructions + optional highlight-window narrative text, then "
+            f"{len(storyboard_paths)} input_image storyboard(s), then (2) PLAYER MEMORY and/or SHARED CONTEXT text."
         ),
         "storyboard_image_count": len(storyboard_paths),
     }
@@ -215,8 +371,8 @@ def generate_text_coaching_review(
         "You do NOT have video — only written context. Never claim you watched a video or saw specific clips. "
         "Ground every statement in the provided context blocks; if context is thin, say so briefly and stay general but still useful. "
         "Tone: professional, warm, specific, and developmental (what to enhance next and how). "
-        "Distinguish: (1) organization-wide standards from SHARED CONTEXT vs (2) player-specific notes from PLAYER MEMORY — "
-        "apply standards without treating them as private facts about this athlete unless memory supports it."
+        "Distinguish: (1) player-specific notes from PLAYER MEMORY vs (2) organization-wide standards from SHARED CONTEXT — "
+        "apply the rubric without treating it as private facts about this athlete unless memory and context agree."
     )
 
     parts: list[str] = [
@@ -232,15 +388,11 @@ def generate_text_coaching_review(
             "Optional viewing link (may be a team app page, not a direct video file — do not assume you viewed it): "
             + link
         )
-    org = (shared_context or "").strip()
-    if org:
-        parts.extend(
-            [
-                "",
-                "--- SHARED CONTEXT (club/program standards for all players; use as rubric) ---",
-                org[:120_000],
-            ]
-        )
+    parts.append(
+        "Reasoning order: (1) Ground in game/session context above. "
+        "(2) Then apply PLAYER MEMORY (if present). "
+        "(3) Then align with SHARED CONTEXT rubric (if present)."
+    )
     mem = (player_memory_context or "").strip()
     if mem:
         parts.extend(
@@ -248,6 +400,15 @@ def generate_text_coaching_review(
                 "",
                 "--- PLAYER MEMORY (retrieved notes about this player only; treat as higher-truth for personalization) ---",
                 mem[:120_000],
+            ]
+        )
+    org = (shared_context or "").strip()
+    if org:
+        parts.extend(
+            [
+                "",
+                "--- SHARED CONTEXT (club/program standards for all players; use as rubric) ---",
+                org[:120_000],
             ]
         )
     user_text = "\n".join(parts)

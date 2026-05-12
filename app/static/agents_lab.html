@@ -323,16 +323,14 @@
           <textarea id="analysisScope" rows="4">Focus on clips where the selected player is clearly visible. When game details mention substitution times or a segment (for example “from minute 51 to full time”), treat that as the primary review window; otherwise review the full clip.</textarea>
           <label class="label" for="coachingFocus">Coaching focus</label>
           <textarea id="coachingFocus" rows="4">Prioritize scanning before receiving, body shape when showing for the ball, support angles and spacing in possession, and pressing triggers when out of possession.</textarea>
-          <label class="label" style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-            <input type="checkbox" id="textOnlyCoaching" checked />
-            <span>Text-only coaching (no ffprobe/video — use for Trace/Hudl/Veo page links and sheet context)</span>
-          </label>
           <p class="small" style="margin-top: 6px;">
-            When checked, the worker still attaches <strong>shared sheet context</strong> (if configured) and <strong>vector player memory</strong> when a player key or first/last name resolves — both are sent to the model for coach-style written feedback.
+            Jobs always run <strong>video processing</strong> (ffprobe / frames / storyboards when the URL supports it). The worker also attaches
+            <strong>shared sheet context</strong> (if configured) and <strong>vector player memory</strong> when a player key or first/last name resolves — together with video-derived context for feedback.
           </p>
           <div class="actions">
-            <button class="primary" id="createFeedbackBtn">Create feedback job</button>
+            <button class="primary" id="createFeedbackBtn">Create video processing job</button>
             <button id="createVideoStubBtn">Create video stub job</button>
+            <button id="videoAnalysisBtn">Video analysis</button>
             <span id="createStatus" class="status">Idle</span>
           </div>
         </section>
@@ -509,7 +507,7 @@
         "trace_id",
       ]);
 
-      /** Columns omitted from "From sheet" text sent to text-only feedback (per product). */
+      /** Columns omitted from "From sheet" text in analysis scope (per product). */
       function isExcludedFromTextFeedbackSheetColumn(headerNorm) {
         if (!headerNorm) return true;
         if (TEXT_FEEDBACK_EXCLUDED_SYNC_HEADERS.has(headerNorm)) return true;
@@ -797,7 +795,7 @@
         const payload = {
           user_id: uid,
           video_url: document.getElementById("videoUrl").value.trim(),
-          text_only: document.getElementById("textOnlyCoaching").checked,
+          text_only: false,
           player_focus: document.getElementById("playerFocus").value.trim(),
           sport: document.getElementById("sport").value.trim() || "Soccer",
           analysis_scope: document.getElementById("analysisScope").value.trim(),
@@ -806,17 +804,56 @@
           first_name: document.getElementById("playerFirstName").value.trim(),
           last_name: document.getElementById("playerLastName").value.trim(),
         };
-        if (!payload.text_only && !payload.video_url) {
-          setText(createStatusEl, "Video URL is required when text-only coaching is unchecked.");
+        if (!payload.video_url) {
+          setText(createStatusEl, "Video URL is required (use a direct streamable video URL, e.g. .mp4).");
           return;
         }
-        setText(createStatusEl, "Creating feedback job...");
+        setText(createStatusEl, "Creating video processing job...");
         try {
           const result = await api("/admin-api/agents-lab/feedback-reviews", {
             method: "POST",
             body: JSON.stringify(payload),
           });
-          setText(createStatusEl, `Created job #${result.agent_job_id}`);
+          setText(createStatusEl, `Created video processing job #${result.agent_job_id}`);
+          await loadWorkspace();
+          await loadJob(result.agent_job_id);
+        } catch (error) {
+          setText(createStatusEl, `Create failed: ${error.message}`);
+        }
+      }
+
+      async function createVideoAnalysisJob() {
+        let uid;
+        try {
+          uid = requireWorkspaceUserId();
+        } catch (e) {
+          setText(createStatusEl, e.message);
+          return;
+        }
+        const video_url = document.getElementById("videoUrl").value.trim();
+        if (!video_url) {
+          setText(createStatusEl, "Video analysis requires a video URL (same as Create video processing job — direct streamable file preferred).");
+          return;
+        }
+        const payload = {
+          user_id: uid,
+          video_url,
+          text_only: false,
+          player_focus: document.getElementById("playerFocus").value.trim(),
+          sport: document.getElementById("sport").value.trim() || "Soccer",
+          analysis_scope: document.getElementById("analysisScope").value.trim(),
+          coaching_focus: document.getElementById("coachingFocus").value.trim(),
+          player_key: document.getElementById("playerKey").value.trim(),
+          first_name: document.getElementById("playerFirstName").value.trim(),
+          last_name: document.getElementById("playerLastName").value.trim(),
+        };
+        setText(createStatusEl, "Creating video analysis job...");
+        try {
+          const result = await api("/admin-api/agents-lab/feedback-reviews", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          setText(createStatusEl, `Created video analysis job #${result.agent_job_id}`);
           await loadWorkspace();
           await loadJob(result.agent_job_id);
         } catch (error) {
@@ -886,6 +923,7 @@
       document.getElementById("reloadWorkspaceBtn").addEventListener("click", loadWorkspace);
       document.getElementById("createFeedbackBtn").addEventListener("click", createFeedbackJob);
       document.getElementById("createVideoStubBtn").addEventListener("click", createVideoStubJob);
+      document.getElementById("videoAnalysisBtn").addEventListener("click", createVideoAnalysisJob);
       document.getElementById("reloadJobsBtn").addEventListener("click", loadWorkspace);
       autoPollBtn.addEventListener("click", () => setAutoPoll(!autoPoll));
 

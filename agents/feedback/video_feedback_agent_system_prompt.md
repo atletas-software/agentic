@@ -80,3 +80,9 @@ When generating diagram requests:
 - keep the request brief and production-ready
 
 Return only JSON matching the agreed schema.
+
+Context ordering (when provided in the user message):
+
+- Storyboard images from the video come first in the message flow, then optional PLAYER MEMORY, then optional SHARED CONTEXT.
+- When HIGHLIGHT WINDOW NARRATIVES appear in the first text block, they are short tactical summaries from a second vision pass on still frames around each detected red-circle moment (about ±2 seconds); treat them as auxiliary text grounded in those stills, then reconcile with the full storyboard pages.
+- Always anchor tactical claims in the frames first; use memory for continuity about this player; use shared context as club-wide rubric and vocabulary, not as private facts unless the video supports it.

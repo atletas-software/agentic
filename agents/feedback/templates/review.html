@@ -461,6 +461,25 @@
         <h4 class="debug-h">User message — text part</h4>
         <pre class="debug-pre">{{ oa.get('user_message_text', '') }}</pre>
         {% endif %}
+        {% set vc = review.get('video_context') %}
+        {% if vc %}
+        <h4 class="debug-h">Video context (processing + highlight captions)</h4>
+        <p class="small" style="margin:0 0 0.35rem;">{{ vc.get('description', '') }}</p>
+        {% set hp = vc.get('preprocess') %}
+        {% if hp %}
+        <p class="small" style="margin:0.35rem 0 0.2rem;"><strong>Frame / storyboard stats</strong></p>
+        <pre class="debug-pre">{{ hp | tojson(indent=2) }}</pre>
+        {% endif %}
+        {% if vc.get('combined_highlight_text') %}
+        <p class="small" style="margin:0.5rem 0 0.2rem;"><strong>Combined highlight-window text</strong> (prepended in the main model user message with storyboard instructions)</p>
+        <pre class="debug-pre">{{ vc.get('combined_highlight_text', '') }}</pre>
+        {% endif %}
+        {% set hc = vc.get('highlight_caption_pass') %}
+        {% if hc %}
+        <p class="small" style="margin:0.5rem 0 0.2rem;"><strong>Highlight caption pass</strong> (vision model on ±2s stills per circle)</p>
+        <pre class="debug-pre">{{ hc | tojson(indent=2) }}</pre>
+        {% endif %}
+        {% endif %}
         <h4 class="debug-h">Shared context sheet (org rubric)</h4>
         <p class="small" style="margin:0 0 0.35rem;">Your org-wide Google Sheet (env <code>FEEDBACK_SHARED_CONTEXT_SPREADSHEET_ID</code> + <code>FEEDBACK_SHARED_CONTEXT_SHEET_GID</code>). On success, the workspace loads the tab as a tab-separated table (truncated to <code>FEEDBACK_SHARED_CONTEXT_MAX_CHARS</code>) and sends it as <code>shared_context</code> in the LLM user message — standards for all players, separate from per-player vector memory.</p>
         {% set sh = gd.get('shared_context_sheet') %}
@@ -506,7 +525,7 @@
         <aside class="agent-panel">
           <div class="panel-heading">
             <h2>Feedback Agent</h2>
-            <p>Player-specific marker feedback from the previous 2 seconds.</p>
+            <p>Marker feedback; automated reviews also build ±2s still windows around each red-circle highlight when detected.</p>
           </div>
           <div class="detail-panel" id="marker-detail">
             <div class="detail-top">

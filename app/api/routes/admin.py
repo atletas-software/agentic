@@ -686,7 +686,7 @@ async def admin_user_raw_logs(
 class AdminAgentsFeedbackReviewBody(BaseModel):
     user_id: str = Field(..., min_length=1)
     video_url: str = Field(default="", max_length=8000)
-    text_only: bool = Field(default=True)
+    text_only: bool = Field(default=False)
     player_focus: str = ""
     sport: str = "Soccer"
     analysis_scope: str = ""
