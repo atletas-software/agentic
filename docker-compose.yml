@@ -14,8 +14,9 @@ services:
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
       FEEDBACK_AGENT_BASE_URL: ${FEEDBACK_AGENT_BASE_URL_DOCKER:-http://feedback-agent:5055}
-      # Set to 0 for multi-worker production-style runs (no auto-reload).
+      # Set DEV_HOT_RELOAD=0 in root .env for production (multi-worker, no auto-reload).
       DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
     command:
       - sh
       - -c
@@ -84,6 +85,10 @@ services:
     environment:
       PORT: 5055
       DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
+      # Public URL users click for share/review links (must be reachable from a browser).
+      # Same-server deploy default: http://<server-host>:5055. Override via root .env: PUBLIC_BASE_URL=...
+      # Leave empty only for local dev where the agent is on 127.0.0.1.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     command:
       - sh
       - -c

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import sys
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -34,9 +35,33 @@ REVIEWS_DIR = DATA_DIR / "reviews"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 
+def _public_review_url(review_id: str) -> str:
+    """Build the user-facing /review/{id} URL.
+
+    Prefers PUBLIC_BASE_URL (recommended for any deployed server). Falls back to
+    HOST:PORT only for local dev — that fallback will be unreachable from remote
+    browsers, so we warn loudly at startup when it's the only choice.
+    """
+    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    if public_base:
+        return f"{public_base}/review/{review_id}"
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "5055"))
+    return f"http://{host}:{port}/review/{review_id}"
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ensure_directories()
+    if not os.getenv("PUBLIC_BASE_URL", "").strip():
+        print(
+            "[feedback-agent] WARNING: PUBLIC_BASE_URL is not set. "
+            "Share/review links will use HOST:PORT (default 127.0.0.1:5055) and will not "
+            "work from a user's browser on a deployed server. Set PUBLIC_BASE_URL in your "
+            "environment (e.g. http://your-server-host:5055 or https://feedback.yourdomain.com).",
+            file=sys.stderr,
+            flush=True,
+        )
     yield
 
 
@@ -176,13 +201,7 @@ def _run_text_coaching_job(review_id: str, payload: Dict[str, Any]) -> None:
         _save_job(review_id, job)
         return
 
-    host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", "5055"))
-    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-    if public_base:
-        review_url = f"{public_base}/review/{review_id}"
-    else:
-        review_url = f"http://{host}:{port}/review/{review_id}"
+    review_url = _public_review_url(review_id)
     job = _load_job(review_id) or {"id": review_id}
     job["status"] = "completed"
     job["error"] = None
@@ -229,13 +248,7 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
         _save_job(review_id, job)
         return
 
-    host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", "5055"))
-    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-    if public_base:
-        review_url = f"{public_base}/review/{review_id}"
-    else:
-        review_url = f"http://{host}:{port}/review/{review_id}"
+    review_url = _public_review_url(review_id)
     job = _load_job(review_id) or {"id": review_id}
     job["status"] = "completed"
     job["error"] = None
