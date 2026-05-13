@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import httpx
 
@@ -97,11 +98,21 @@ def process_feedback_review_embed_job(agent_job_id: int) -> dict[str, object]:
             return {"ok": False, "skipped": True, "reason": "no_feedback_agent"}
 
         timeout = float(os.getenv("FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS", "30"))
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.get(f"{base}/api/reviews/{review_id}")
-        if resp.status_code >= 400:
-            return {"ok": False, "error": f"fetch_review_http_{resp.status_code}"}
-        review = resp.json()
+        review: dict | None = None
+        last_status = 0
+        for attempt in range(5):
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(f"{base}/api/reviews/{review_id}")
+            last_status = resp.status_code
+            if resp.status_code == 404 and attempt < 4:
+                time.sleep(2.0)
+                continue
+            if resp.status_code >= 400:
+                return {"ok": False, "error": f"fetch_review_http_{resp.status_code}"}
+            review = resp.json()
+            break
+        if review is None:
+            return {"ok": False, "error": f"fetch_review_http_{last_status}"}
         if review.get("error"):
             return {"ok": False, "error": "review_response_error"}
 

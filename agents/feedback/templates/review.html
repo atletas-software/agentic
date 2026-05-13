@@ -192,7 +192,16 @@
         background: rgba(239, 68, 68, .12);
         pointer-events: none;
       }
-      .timeline { position: relative; height: 10px; background: #d8e2ea; border-radius: 999px; margin-top: .35rem; }
+      .timeline-scroll {
+        overflow-x: auto;
+        overflow-y: visible;
+        padding: 14px 0 6px;
+        margin-top: .25rem;
+        scrollbar-color: #cbd5e1 transparent;
+      }
+      .timeline-scroll::-webkit-scrollbar { height: 8px; }
+      .timeline-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+      .timeline { position: relative; height: 10px; background: #d8e2ea; border-radius: 999px; min-width: 100%; }
       .marker-dot {
         position: absolute;
         top: -9px;
@@ -519,7 +528,9 @@
               <div class="bbox-selection" id="bbox-selection"></div>
             </div>
           </div>
-          <div class="timeline" id="timeline"></div>
+          <div class="timeline-scroll" id="timeline-scroll">
+            <div class="timeline" id="timeline"></div>
+          </div>
           <div class="small" id="video-status">Click a marker stick to open feedback, or pause and draw a player box.</div>
         </section>
         <aside class="agent-panel">
@@ -657,16 +668,31 @@
       function renderMarkers() {
         timeline.innerHTML = "";
         markerList.innerHTML = "";
-        markers.forEach((marker) => {
+        const scroll = document.getElementById("timeline-scroll");
+        const baseWidth = Math.max(1, (scroll && scroll.clientWidth) || timeline.clientWidth || 600);
+        const minPxGap = 22;
+        const ordered = markers.slice().sort((a, b) => a.timestamp_sec - b.timestamp_sec);
+        const positions = ordered.map((m) => (m.timestamp_sec / Math.max(duration, 0.001)) * baseWidth);
+        for (let i = 1; i < positions.length; i += 1) {
+          if (positions[i] - positions[i - 1] < minPxGap) {
+            positions[i] = positions[i - 1] + minPxGap;
+          }
+        }
+        const lastPos = positions.length ? positions[positions.length - 1] : 0;
+        const trackWidth = Math.max(baseWidth, lastPos + 16);
+        timeline.style.width = `${trackWidth}px`;
+        ordered.forEach((marker, i) => {
           const dot = document.createElement("button");
           dot.className = `marker-dot ${marker.sentiment}`;
-          dot.style.left = `${(marker.timestamp_sec / duration) * 100}%`;
+          dot.style.left = `${positions[i]}px`;
+          dot.style.top = "-9px";
           dot.title = `${marker.label} @ ${marker.timestamp_sec}s`;
           dot.type = "button";
           dot.addEventListener("click", () => jumpToMarker(marker));
           timeline.appendChild(dot);
         });
       }
+      window.addEventListener("resize", () => renderMarkers());
 
       function pointFromEvent(event) {
         const rect = bboxLayer.getBoundingClientRect();

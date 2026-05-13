@@ -339,9 +339,15 @@
           <h3>Agent jobs</h3>
           <div class="actions">
             <button id="reloadJobsBtn">Reload jobs</button>
-            <button id="autoPollBtn">Auto-poll: Off</button>
+            <button id="autoPollBtn">Auto-poll: On</button>
           </div>
           <div id="jobsList" class="list"></div>
+          <p class="small" style="margin-top: 8px;">
+            Jobs run <strong>one at a time</strong> per worker. A <strong>FEEDBACK_DELEGATE</strong> video job can stay
+            <strong>RUNNING</strong> for a long time (timeline scan + vision); the next job stays <strong>PENDING</strong>
+            until the worker is free. Turn <strong>Auto-poll</strong> on to refresh; open a job to see full payload and
+            live progress in <code>result.feedback_agent_poll</code>.
+          </p>
           <p class="small">Select a job to inspect payload/result details.</p>
         </section>
       </div>
@@ -364,7 +370,7 @@
       let workspaceData = null;
       let selectedContextId = null;
       let selectedJobId = null;
-      let autoPoll = false;
+      let autoPoll = true;
       let pollTimer = null;
       let cachedSnapshot = null;
       let cachedUsers = [];
@@ -716,11 +722,20 @@
               (String(job.error_message).length > 120 ? "…" : "")
             : "";
           const errBlock = err ? ` · <span class="item-err">${err}</span>` : "";
+          const canStop = job.status === "PENDING" || job.status === "RUNNING";
+          const stopBtn = canStop
+            ? `<button type="button" class="secondary outline sm" data-cancel-job="${job.id}">Stop</button>`
+            : "";
+          const phRaw = job.progress_hint ? String(job.progress_hint) : "";
+          const ph = phRaw
+            ? escapeHtml(phRaw.slice(0, 160)) + (phRaw.length > 160 ? "…" : "")
+            : "";
+          const hintBlock = ph ? `<div class="item-meta" style="margin-top:4px;">${ph}</div>` : "";
           return `
           <div class="item ${selectedJobId === job.id ? "active" : ""}" data-job-id="${job.id}">
-            <div class="item-row"><strong>${job.agent_type}</strong> ${statusPill(job.status)}</div>
+            <div class="item-row"><strong>${job.agent_type}</strong> ${statusPill(job.status)} ${stopBtn}</div>
             <div class="item-meta mono">job ${job.id}${job.external_ref ? " · " + escapeHtml(String(job.external_ref)) : ""}</div>
-            <div class="item-time">${job.created_at || "—"}${errBlock}</div>
+            <div class="item-time">${job.created_at || "—"}${errBlock}</div>${hintBlock}
           </div>`;
         }).join("");
       }
@@ -733,6 +748,9 @@
           renderContextItems(workspaceData.context_items || []);
           renderJobs(workspaceData.agent_jobs || []);
           setText(workspaceStatusEl, "Workspace loaded");
+          if (autoPoll) {
+            startAutoPollTimer();
+          }
         } catch (error) {
           workspaceData = null;
           renderContextItems([]);
@@ -883,20 +901,34 @@
         }
       }
 
+      function startAutoPollTimer() {
+        if (pollTimer !== null || !autoPoll) return;
+        pollTimer = setInterval(async () => {
+          try {
+            await loadWorkspace();
+          } catch (_) {
+            /* loadWorkspace updates status text */
+          }
+          if (selectedJobId) {
+            try {
+              await loadJob(selectedJobId);
+            } catch (_) {
+              /* ignore */
+            }
+          }
+        }, 5000);
+        autoPollBtn.textContent = "Auto-poll: On";
+      }
+
       function setAutoPoll(enabled) {
         autoPoll = enabled;
         autoPollBtn.textContent = `Auto-poll: ${enabled ? "On" : "Off"}`;
-        if (pollTimer) {
+        if (pollTimer !== null) {
           clearInterval(pollTimer);
           pollTimer = null;
         }
         if (enabled) {
-          pollTimer = setInterval(async () => {
-            await loadWorkspace();
-            if (selectedJobId) {
-              await loadJob(selectedJobId);
-            }
-          }, 5000);
+          startAutoPollTimer();
         }
       }
 
@@ -935,7 +967,35 @@
         loadContextPayload(id);
       });
 
-      jobsListEl.addEventListener("click", (event) => {
+      jobsListEl.addEventListener("click", async (event) => {
+        const stopBtn = event.target.closest("[data-cancel-job]");
+        if (stopBtn) {
+          event.preventDefault();
+          event.stopPropagation();
+          const jid = Number(stopBtn.getAttribute("data-cancel-job"));
+          if (!Number.isFinite(jid)) return;
+          let uid;
+          try {
+            uid = requireWorkspaceUserId();
+          } catch (e) {
+            setText(workspaceStatusEl, e.message);
+            return;
+          }
+          stopBtn.disabled = true;
+          try {
+            await api(
+              `/admin-api/agents-lab/jobs/${jid}/cancel?user_id=` + encodeURIComponent(uid),
+              { method: "POST", body: JSON.stringify({}) },
+            );
+            setText(workspaceStatusEl, `Stop requested for job #${jid}`);
+            await loadWorkspace();
+          } catch (err) {
+            setText(workspaceStatusEl, err.message || String(err));
+          } finally {
+            stopBtn.disabled = false;
+          }
+          return;
+        }
         const item = event.target.closest("[data-job-id]");
         if (!item) return;
         const id = Number(item.getAttribute("data-job-id"));

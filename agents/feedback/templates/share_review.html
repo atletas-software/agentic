@@ -16,7 +16,16 @@
       .layout { display: grid; grid-template-columns: 2fr 1fr; gap: 1.25rem; }
       .panel { background: rgba(255,255,255,.94); border-radius: 18px; padding: 1rem; box-shadow: 0 20px 40px rgba(15,23,42,.08); }
       video { width: 100%; border-radius: 14px; background: #000; display: block; }
-      .timeline { position: relative; height: 14px; background: #d8e2ea; border-radius: 999px; margin: 1rem 0; }
+      .timeline-scroll {
+        overflow-x: auto;
+        overflow-y: visible;
+        padding: 18px 0 6px;
+        margin: .75rem 0;
+        scrollbar-color: #cbd5e1 transparent;
+      }
+      .timeline-scroll::-webkit-scrollbar { height: 8px; }
+      .timeline-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+      .timeline { position: relative; height: 14px; background: #d8e2ea; border-radius: 999px; min-width: 100%; }
       .marker-dot {
         position: absolute;
         top: -7px;
@@ -76,7 +85,9 @@
           <video id="player" controls preload="metadata" playsinline>
             <source src="{{ review.video_url }}" type="video/mp4">
           </video>
-          <div class="timeline" id="timeline"></div>
+          <div class="timeline-scroll" id="timeline-scroll">
+            <div class="timeline" id="timeline"></div>
+          </div>
           <div class="small">Click any marker to jump to that moment and read the feedback.</div>
           <div class="small" id="video-status"></div>
           <div class="detail-panel hidden" id="marker-detail">
@@ -160,16 +171,31 @@
       function renderMarkers() {
         timeline.innerHTML = "";
         markerList.innerHTML = "";
-        markers.forEach((marker) => {
+        const scroll = document.getElementById("timeline-scroll");
+        const baseWidth = Math.max(1, (scroll && scroll.clientWidth) || timeline.clientWidth || 600);
+        const minPxGap = 22;
+        const ordered = markers.slice().sort((a, b) => a.timestamp_sec - b.timestamp_sec);
+        const positions = ordered.map((m) => (m.timestamp_sec / Math.max(duration, 0.001)) * baseWidth);
+        for (let i = 1; i < positions.length; i += 1) {
+          if (positions[i] - positions[i - 1] < minPxGap) {
+            positions[i] = positions[i - 1] + minPxGap;
+          }
+        }
+        const lastPos = positions.length ? positions[positions.length - 1] : 0;
+        const trackWidth = Math.max(baseWidth, lastPos + 16);
+        timeline.style.width = `${trackWidth}px`;
+        ordered.forEach((marker, i) => {
           const dot = document.createElement("button");
           dot.className = `marker-dot ${marker.sentiment}`;
-          dot.style.left = `${(marker.timestamp_sec / duration) * 100}%`;
+          dot.style.left = `${positions[i]}px`;
+          dot.style.top = "-7px";
           dot.title = `${marker.label} @ ${marker.timestamp_sec}s`;
           dot.type = "button";
           dot.addEventListener("click", () => jumpToMarker(marker));
           timeline.appendChild(dot);
         });
       }
+      window.addEventListener("resize", () => renderMarkers());
 
       player.addEventListener("error", () => {
         videoStatus.textContent = "The browser could not play this video URL. The signed link may be expired or blocked.";

@@ -8,7 +8,12 @@ from typing import Any, List, Literal, Optional
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from agents.feedback.models import VideoFeedbackReview
+from agents.feedback.models import (
+    Category,
+    OverallAssessment,
+    Sentiment,
+    VideoFeedbackReview,
+)
 from agents.feedback.video_utils import FrameAsset
 
 
@@ -19,6 +24,14 @@ class PlayerLocalization(BaseModel):
     center_y: float
     radius: float
     note: str
+
+
+class CircleSegmentVisionOutput(BaseModel):
+    """Structured coaching for one highlight visibility window (pre, during circle, post)."""
+
+    category: Category
+    sentiment: Sentiment
+    coaching_note: str = Field(max_length=2500)
 
 
 class ManualMomentFeedback(BaseModel):
@@ -51,7 +64,11 @@ class ManualMomentFeedback(BaseModel):
 
 
 def _encode_image(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("utf-8")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read frame image for vision (missing or unreadable): {path}") from exc
+    return base64.b64encode(raw).decode("utf-8")
 
 
 _DEBUG_STORE_MAX = 48_000
@@ -190,6 +207,187 @@ def summarize_highlight_windows_for_feedback(
     debug["chars_returned"] = len(text)
     debug["windows_detail"] = meta_windows
     return text, debug
+
+
+def vision_analyze_circle_segment(
+    *,
+    frame_paths: list[Path],
+    t_lo: float,
+    t_on: float,
+    t_off: float,
+    t_hi: float,
+    sport: str,
+    player_focus: str,
+    segment_index: int,
+    segment_total: int,
+) -> tuple[CircleSegmentVisionOutput, dict[str, Any]]:
+    """Single vision parse for one episode: stills cover pre-circle, visible span, and post-circle."""
+    debug: dict[str, Any] = {
+        "segment_index": segment_index,
+        "segment_total": segment_total,
+        "t_lo": t_lo,
+        "t_on": t_on,
+        "t_off": t_off,
+        "t_hi": t_hi,
+        "frame_count": len(frame_paths),
+        "outcome": "pending",
+    }
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        debug["outcome"] = "error"
+        debug["error"] = "OPENAI_API_KEY_missing"
+        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your environment or .env file.")
+    if not frame_paths:
+        debug["outcome"] = "error"
+        debug["error"] = "no_frames"
+        raise RuntimeError("vision_analyze_circle_segment requires at least one frame.")
+
+    model = (os.getenv("VIDEO_CIRCLE_SEGMENT_VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
+    client = OpenAI(api_key=api_key)
+
+    user_lines = [
+        "You analyze still frames from one continuous time window of a soccer performance clip.",
+        f"Sport: {sport or 'Soccer'}. Player focus: {player_focus or 'the athlete circled in red when visible'}.",
+        f"Episode {segment_index} of {segment_total}: red highlight circle visibility is approximately {t_on:.2f}s–{t_off:.2f}s.",
+        f"Frames span {t_lo:.2f}s through {t_hi:.2f}s (includes ~{t_lo:.2f}s–{t_on:.2f}s before the circle reliably appears, the span while it is on, and ~{t_off:.2f}s–{t_hi:.2f}s after it disappears).",
+        "Images are chronological. The red circle may only appear on some middle frames.",
+        "",
+        "Tasks:",
+        "1) Judge positioning, movement, and decisions for the circled/target player across the whole window (before, during, after the highlight).",
+        "2) Choose one primary category and sentiment.",
+        "3) Write coaching_note as 2–5 tight sentences: what to keep doing, what to adjust, and the next read — grounded only in what the stills support.",
+        "If the target player is unclear, stay conservative and avoid invented actions.",
+    ]
+    user_text = "\n".join(user_lines)
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
+    for path in frame_paths:
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{_encode_image(path)}",
+            }
+        )
+
+    try:
+        response = client.responses.parse(
+            model=model,
+            input=[{"role": "user", "content": content}],
+            text_format=CircleSegmentVisionOutput,
+        )
+        parsed = response.output_parsed
+    except Exception as exc:  # noqa: BLE001
+        debug["outcome"] = "error"
+        debug["error"] = str(exc)
+        raise
+    if parsed is None:
+        debug["outcome"] = "error"
+        debug["error"] = "empty_parse"
+        raise RuntimeError("Segment vision returned no parsed payload.")
+
+    debug["outcome"] = "success"
+    debug["model"] = model
+    return parsed, debug
+
+
+def synthesize_overall_from_circle_segments(
+    *,
+    prompt_tone: str,
+    sport: str,
+    player_focus: str,
+    duration_sec: float,
+    analysis_scope: str,
+    coaching_focus: str,
+    segments_markdown: str,
+    storyboard_paths: list[Path],
+    player_memory_context: Optional[str] = None,
+    shared_context: Optional[str] = None,
+) -> tuple[OverallAssessment, dict[str, Any]]:
+    """Second pass: overall strengths / improvements / next_focus from episode notes + optional storyboards."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your environment or .env file.")
+
+    model = (os.getenv("VIDEO_CIRCLE_OVERALL_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
+    client = OpenAI(api_key=api_key)
+
+    system = (
+        "You are an elite youth soccer performance analyst. You synthesize episode-level coaching notes into "
+        "one overall assessment (strengths, improvements, next_focus). "
+        "Ground the synthesis in the structured episode text and any storyboard pages; do not contradict them. "
+        "Tone from the reference prompt:\n"
+        + (prompt_tone or "")[:6000]
+    )
+
+    prefix_lines = [
+        "Synthesize overall assessment from highlight-circle episodes (each episode analyzed separately below).",
+        f"Sport: {sport or 'Soccer'}",
+        f"Player focus: {player_focus or 'the athlete'}",
+        f"Video duration (seconds): {duration_sec:.2f}",
+        f"Analysis scope: {analysis_scope or 'Full clip.'}",
+        f"Coaching focus requested: {coaching_focus or 'Balanced technical and tactical feedback.'}",
+        "",
+        "--- EPISODES (structured; one red-circle visibility span per block) ---",
+        segments_markdown[:80_000],
+    ]
+    user_text_prefix = "\n".join(prefix_lines)
+
+    mem = (player_memory_context or "").strip()
+    org = (shared_context or "").strip()
+    suffix_parts: list[str] = []
+    if mem:
+        suffix_parts.extend(
+            [
+                "",
+                "--- PLAYER MEMORY (continuity for this player; do not contradict episode evidence) ---",
+                mem[:120_000],
+            ]
+        )
+    if org:
+        suffix_parts.extend(
+            [
+                "",
+                "--- SHARED CONTEXT (club rubric / vocabulary) ---",
+                org[:120_000],
+            ]
+        )
+    user_text_suffix = "\n".join(suffix_parts) if suffix_parts else ""
+
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text_prefix}]
+    for path in storyboard_paths:
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{_encode_image(path)}",
+            }
+        )
+    if user_text_suffix:
+        content.append({"type": "input_text", "text": user_text_suffix})
+
+    response = client.responses.parse(
+        model=model,
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ],
+        text_format=OverallAssessment,
+    )
+    parsed = response.output_parsed
+    if parsed is None:
+        raise RuntimeError("Overall synthesis returned no parsed payload.")
+
+    bridge = (
+        f"\n\n--- [{len(storyboard_paths)} storyboard image(s) between text blocks] ---\n\n"
+        if storyboard_paths
+        else ""
+    )
+    llm_debug: dict[str, Any] = {
+        "model": model,
+        "pass": "circle_segment_overall",
+        "system_message": _truncate_for_debug_text(system),
+        "user_message_text": _truncate_for_debug_text(user_text_prefix + bridge + user_text_suffix),
+        "storyboard_image_count": len(storyboard_paths),
+    }
+    return parsed, llm_debug
 
 
 def analyze_storyboards(

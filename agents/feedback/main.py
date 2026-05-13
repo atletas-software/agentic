@@ -16,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 
 from agents.feedback.openai_service import analyze_manual_moment, generate_text_coaching_review
 from agents.feedback.review_agent import build_review
-from agents.feedback.storage import DATA_DIR, ensure_directories, load_json, save_json
+from agents.feedback.storage import DATA_DIR, ensure_directories, load_json, review_cancel_requested, save_json
 from agents.feedback.video_utils import (
     crop_reference_patch,
     draw_bbox_overlay,
@@ -57,6 +57,14 @@ def _calibration_path(review_id: str) -> Path:
 
 def _save_job(review_id: str, payload: Dict[str, Any]) -> None:
     save_json(_job_path(review_id), payload)
+
+
+def _merge_job_progress(review_id: str, patch: Dict[str, Any]) -> None:
+    """Update job.json in place so polling shows phase (long circle-segment runs)."""
+    job = _load_job(review_id) or {"id": review_id}
+    job.update(patch)
+    job.setdefault("status", "running")
+    _save_job(review_id, job)
 
 
 def _load_job(review_id: str) -> Optional[Dict[str, Any]]:
@@ -180,6 +188,8 @@ def _run_text_coaching_job(review_id: str, payload: Dict[str, Any]) -> None:
     job["error"] = None
     job["review_url"] = review_url
     job["review_title"] = review["title"]
+    for k in ("phase", "progress_detail", "probe_current", "probe_estimate", "segment_current", "segment_total"):
+        job.pop(k, None)
     _save_job(review_id, job)
 
 
@@ -207,6 +217,10 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             shared_context=(payload.get("shared_context") or "").strip() or None,
             player_memory_retrieval_debug=payload.get("player_memory_retrieval_debug"),
             shared_context_sheet_debug=payload.get("shared_context_sheet_debug"),
+            on_progress=lambda p: _merge_job_progress(review_id, p),
+            cancel_check=lambda: review_cancel_requested(review_id),
+            player_first_name=(payload.get("first_name") or "").strip() or None,
+            player_last_name=(payload.get("last_name") or "").strip() or None,
         )
     except Exception as exc:  # noqa: BLE001
         job = _load_job(review_id) or {"id": review_id}
@@ -227,6 +241,8 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
     job["error"] = None
     job["review_url"] = review_url
     job["review_title"] = review["title"]
+    for k in ("phase", "progress_detail", "probe_current", "probe_estimate", "segment_current", "segment_total"):
+        job.pop(k, None)
     _save_job(review_id, job)
 
 
@@ -299,6 +315,8 @@ async def create_review(request: Request) -> JSONResponse:
         "player_memory_context": mem,
         "shared_context": shared,
         "text_only": text_only,
+        "first_name": (payload.get("first_name") or "").strip(),
+        "last_name": (payload.get("last_name") or "").strip(),
         "player_memory_retrieval_debug": payload.get("player_memory_retrieval_debug"),
         "shared_context_sheet_debug": payload.get("shared_context_sheet_debug"),
     }
@@ -333,6 +351,14 @@ async def job_status(review_id: str) -> JSONResponse:
     if not job:
         return JSONResponse({"error": "review job not found"}, status_code=404)
     return JSONResponse(job)
+
+
+@app.post("/api/reviews/{review_id}/cancel")
+async def cancel_review_background(review_id: str) -> JSONResponse:
+    """Cooperative cancel: background build_review checks review_cancel_requested()."""
+    (REVIEWS_DIR / review_id).mkdir(parents=True, exist_ok=True)
+    (REVIEWS_DIR / review_id / "cancel_requested").write_text("1", encoding="utf-8")
+    return JSONResponse({"ok": True, "review_id": review_id})
 
 
 @app.get("/review/{review_id}", response_class=HTMLResponse)

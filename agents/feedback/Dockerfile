@@ -8,7 +8,7 @@ ENV PYTHONPATH=/app
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 COPY agents/requirements.txt /tmp/agents/requirements.txt

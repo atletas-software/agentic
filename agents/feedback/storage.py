@@ -22,3 +22,8 @@ def load_json(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def review_cancel_requested(review_id: str) -> bool:
+    """Workspace Stop calls POST /api/reviews/{id}/cancel which touches this file."""
+    return (DATA_DIR / "reviews" / review_id / "cancel_requested").exists()

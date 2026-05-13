@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from rq import Retry
 
 from app.core.logger import info
@@ -22,19 +24,19 @@ def enqueue_workspace_context_refresh(user_id: str) -> bool:
         return False
 
 
-def enqueue_feedback_delegate_job(agent_job_id: int) -> bool:
+def enqueue_feedback_delegate_job(agent_job_id: int) -> str | None:
     try:
         q = get_workspace_queue()
-        q.enqueue(
+        rq_job = q.enqueue(
             "app.workers.workspace_worker.process_feedback_delegate_job",
             agent_job_id,
-            job_timeout=600,
+            job_timeout=int(os.getenv("FEEDBACK_DELEGATE_RQ_JOB_TIMEOUT", "28800")),
             retry=Retry(max=1, interval=[30]),
         )
-        return True
+        return str(rq_job.id)
     except Exception as exc:  # noqa: BLE001
         info("feedback_delegate_enqueue_failed", agent_job_id=agent_job_id, error=str(exc))
-        return False
+        return None
 
 
 def enqueue_video_processing_stub_job(agent_job_id: int) -> bool:

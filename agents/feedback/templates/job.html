@@ -41,7 +41,20 @@
           details.innerHTML = `<p><strong>Failed:</strong> ${data.error}</p>`;
           return;
         }
-        details.innerHTML = `<p>Video: ${data.video_url}</p><p>Player: ${data.player_focus || "Not provided"}</p>`;
+        let extra = "";
+        if (data.progress_detail) {
+          extra += `<p><strong>Progress:</strong> ${data.progress_detail}</p>`;
+        }
+        if (data.phase) {
+          extra += `<p><small>Phase: ${data.phase}</small></p>`;
+        }
+        if (data.probe_current != null && data.probe_estimate != null) {
+          extra += `<p><small>Timeline samples: ${data.probe_current} / ${data.probe_estimate}</small></p>`;
+        }
+        if (data.segment_current != null && data.segment_total != null) {
+          extra += `<p><small>Episodes: ${data.segment_current} / ${data.segment_total}</small></p>`;
+        }
+        details.innerHTML = `<p>Video: ${data.video_url}</p><p>Player: ${data.player_focus || "Not provided"}</p>${extra}`;
         setTimeout(poll, 3000);
       }
 

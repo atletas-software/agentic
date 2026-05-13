@@ -35,6 +35,13 @@ from app.services.workspace_enqueue import (
     enqueue_workspace_context_refresh,
 )
 from app.services.workspace_service import ensure_workspace
+from app.services.agent_job_cancel import (
+    merge_agent_job_result_json,
+    request_feedback_agent_cancel,
+    set_agent_job_cancel_requested,
+)
+from app.services.sync_queue import get_redis
+from app.workers.workspace_worker import feedback_agent_poll_progress_hint
 
 router = APIRouter(prefix="/admin-api", tags=["admin"])
 
@@ -815,6 +822,7 @@ async def agents_lab_workspace(
                 "created_at": j.created_at.isoformat() if j.created_at else None,
                 "completed_at": j.completed_at.isoformat() if j.completed_at else None,
                 "error_message": j.error_message,
+                "progress_hint": feedback_agent_poll_progress_hint(j.result_json),
             }
             for j in jobs
         ],
@@ -866,6 +874,71 @@ async def agents_lab_job(
     }
 
 
+@router.post("/agents-lab/jobs/{job_id}/cancel")
+async def agents_lab_cancel_agent_job(
+    job_id: int,
+    user_id: str = Query(..., min_length=1),
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Stop a PENDING or RUNNING workspace agent job (Redis + optional RQ dequeue + feedback-agent cancel)."""
+    from rq.job import Job
+
+    _admin_require_user(db, user_id)
+    ws = db.query(Workspace).filter(Workspace.user_id == user_id).one_or_none()
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    job = db.get(AgentJob, job_id)
+    if job is None or job.workspace_id != ws.id:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    st = (job.status or "").upper()
+    if st in ("SUCCESS", "FAILED", "SKIPPED"):
+        return {"ok": False, "reason": "job_already_finished", "status": job.status}
+
+    merge_agent_job_result_json(
+        job,
+        {"cancel_requested_at": datetime.now(UTC).isoformat(), "cancel_requested": True},
+    )
+    set_agent_job_cancel_requested(job_id)
+
+    review_id = (job.external_ref or "").strip()
+    if not review_id and job.result_json:
+        try:
+            meta = json.loads(job.result_json)
+            poll = meta.get("feedback_agent_poll")
+            if isinstance(poll, dict):
+                review_id = str(poll.get("review_id") or "").strip()
+        except json.JSONDecodeError:
+            review_id = ""
+    if review_id:
+        request_feedback_agent_cancel(review_id)
+
+    rq_job_id: str | None = None
+    if job.result_json:
+        try:
+            rq_job_id = str(json.loads(job.result_json).get("rq_job_id") or "").strip() or None
+        except json.JSONDecodeError:
+            rq_job_id = None
+    if rq_job_id and st == "PENDING":
+        try:
+            rj = Job.fetch(rq_job_id, connection=get_redis())
+            rj_status = str(rj.get_status()).lower()
+            if rj_status in ("queued", "scheduled", "deferred"):
+                rj.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if st == "PENDING":
+        job.status = "FAILED"
+        job.error_message = "Cancelled by user (stopped before worker started)."
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": True, "stopped": "pending"}
+
+    db.commit()
+    return {"ok": True, "stopped": "running", "review_id": review_id or None}
+
+
 @router.post("/agents-lab/workspace-refresh")
 async def agents_lab_workspace_refresh(
     body: AdminAgentsUserIdBody,
@@ -911,13 +984,15 @@ async def agents_lab_create_feedback_review(
     db.add(job)
     db.commit()
     db.refresh(job)
-    ok = enqueue_feedback_delegate_job(job.id)
-    if not ok:
+    rq_rid = enqueue_feedback_delegate_job(job.id)
+    if not rq_rid:
         job.status = "FAILED"
         job.error_message = "Failed to enqueue feedback job."
         job.completed_at = datetime.now(UTC)
         db.commit()
         raise HTTPException(status_code=503, detail="Could not enqueue feedback job.")
+    merge_agent_job_result_json(job, {"rq_job_id": rq_rid})
+    db.commit()
     return {"success": True, "agent_job_id": job.id}
 
 

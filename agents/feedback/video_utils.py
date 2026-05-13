@@ -4,8 +4,10 @@ import math
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -29,10 +31,95 @@ def require_binary(name: str) -> None:
         )
 
 
+def _ffprobe_timeout_sec() -> float | None:
+    raw = (os.getenv("VIDEO_FFPROBE_TIMEOUT_SEC") or "90").strip().lower()
+    if raw in {"", "0", "none", "off"}:
+        return None
+    return float(raw)
+
+
+def _ffmpeg_extract_timeout_sec() -> float | None:
+    raw = (os.getenv("VIDEO_FFMPEG_EXTRACT_TIMEOUT_SEC") or "180").strip().lower()
+    if raw in {"", "0", "none", "off"}:
+        return None
+    return float(raw)
+
+
+def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
+    raw = proc.stderr
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace").strip()[-6000:]
+    return str(raw).strip()[-6000:]
+
+
+def _ffmpeg_http_global_options(video_url: str) -> list[str]:
+    """Reconnect / read timeouts help CloudFront and other HTTP(S) sources during seeks."""
+    if not video_url.startswith(("http://", "https://")):
+        return []
+    rw_us = int((os.getenv("VIDEO_FFMPEG_RW_TIMEOUT_US") or "25000000").strip() or "25000000")
+    opts = [
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_delay_max",
+        "5",
+        "-rw_timeout",
+        str(rw_us),
+    ]
+    ua = (os.getenv("VIDEO_FFMPEG_USER_AGENT") or "").strip()
+    if ua:
+        opts.extend(["-user_agent", ua])
+    return opts
+
+
+def _jpeg_output_usable(path: Path) -> bool:
+    """ffmpeg occasionally exits 0 without a real frame (e.g. seek past decodable content)."""
+    try:
+        if not path.is_file():
+            return False
+        if path.stat().st_size < 512:
+            return False
+        with path.open("rb") as fh:
+            return fh.read(3) == b"\xff\xd8\xff"
+    except OSError:
+        return False
+
+
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    timeout: float | None,
+    text: bool,
+    what: str,
+) -> subprocess.CompletedProcess:
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=text, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        hint = (
+            "If this URL is a CloudFront signed link, it may be locked to a specific source IP or may have expired. "
+            "Try ffprobe from the same host, or increase VIDEO_FFPROBE_TIMEOUT_SEC / VIDEO_FFMPEG_EXTRACT_TIMEOUT_SEC."
+        )
+        raise RuntimeError(f"{what} timed out after {timeout}s. {hint}") from exc
+    if proc.returncode != 0:
+        tail = _stderr_tail(proc)
+        raise RuntimeError(
+            f"{what} failed (exit {proc.returncode}). ffmpeg/ffprobe stderr (tail): {tail or '(empty)'}"
+        )
+    return proc
+
+
 def probe_duration(video_url: str) -> float:
     require_binary("ffprobe")
+    prefix: list[str] = []
+    if video_url.startswith(("http://", "https://")):
+        rw_us = int((os.getenv("VIDEO_FFPROBE_RW_TIMEOUT_US") or "30000000").strip() or "30000000")
+        prefix = ["-rw_timeout", str(rw_us)]
     cmd = [
         "ffprobe",
+        *prefix,
         "-v",
         "error",
         "-show_entries",
@@ -41,7 +128,12 @@ def probe_duration(video_url: str) -> float:
         "default=noprint_wrappers=1:nokey=1",
         video_url,
     ]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    result = _run_subprocess(
+        cmd,
+        timeout=_ffprobe_timeout_sec(),
+        text=True,
+        what="ffprobe (read duration)",
+    )
     return float(result.stdout.strip())
 
 
@@ -65,20 +157,7 @@ def extract_frames(
     for index in range(count):
         timestamp = round((index + 1) * gap, 2)
         image_path = output_dir / f"frame_{index + 1:02d}.jpg"
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            str(timestamp),
-            "-i",
-            video_url,
-            "-frames:v",
-            "1",
-            "-vf",
-            f"scale={frame_width}:-1",
-            str(image_path),
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
+        extract_frame_at_timestamp(video_url, timestamp, image_path, frame_width=frame_width)
         _stamp_timestamp(image_path, timestamp)
         assets.append(FrameAsset(timestamp_sec=timestamp, image_path=image_path))
 
@@ -309,29 +388,235 @@ def create_focus_crops(frame_assets: list[FrameAsset], output_dir: Path) -> list
     return focused
 
 
+def _ffmpeg_jpeg_video_filter(frame_width: int) -> str:
+    """
+    Scale then convert to full-range 4:2:0 for MJPEG output.
+
+    TV-range H.264 (yuv420p + limited) often fails the default MJPEG encoder with
+    'Non full-range YUV is non-standard' / EINVAL (-22) on ffmpeg 6+.
+    """
+    return f"scale={frame_width}:-1:flags=bicubic,format=yuvj420p"
+
+
+def _ffmpeg_frame_extract_cmd(
+    video_url: str,
+    timestamp_sec: float,
+    output_path: Path,
+    frame_width: int,
+    *,
+    seek_before_input: bool,
+) -> list[str]:
+    http_opts = _ffmpeg_http_global_options(video_url)
+    q = (os.getenv("VIDEO_FFMPEG_JPEG_Q") or "3").strip() or "3"
+    vf = _ffmpeg_jpeg_video_filter(frame_width)
+    tail = [
+        "-vf",
+        vf,
+        "-frames:v",
+        "1",
+        "-q:v",
+        q,
+        "-strict",
+        "-2",
+        str(output_path),
+    ]
+    if seek_before_input:
+        return ["ffmpeg", "-y", *http_opts, "-ss", str(timestamp_sec), "-i", video_url, *tail]
+    return ["ffmpeg", "-y", *http_opts, "-i", video_url, "-ss", str(timestamp_sec), *tail]
+
+
 def extract_frame_at_timestamp(
     video_url: str,
     timestamp_sec: float,
     output_path: Path,
     frame_width: int = 1280,
 ) -> Path:
+    """
+    Extract one JPEG. Tries fast seek (-ss before -i), then accurate seek (-ss after -i) on failure —
+    CloudFront / HTTP sources often need the slower path after mid-file seeks (ffmpeg exit 234, etc.).
+    Pixel pipeline uses full-range YUV (yuvj420p) so MJPEG does not fail on TV-range H.264 (exit -22).
+    """
     require_binary("ffmpeg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        str(timestamp_sec),
-        "-i",
-        video_url,
-        "-frames:v",
-        "1",
-        "-vf",
-        f"scale={frame_width}:-1",
-        str(output_path),
-    ]
-    subprocess.run(cmd, check=True, capture_output=True)
-    return output_path
+    timeout = _ffmpeg_extract_timeout_sec()
+    last_err: RuntimeError | None = None
+    for seek_first in (True, False):
+        cmd = _ffmpeg_frame_extract_cmd(
+            video_url,
+            timestamp_sec,
+            output_path,
+            frame_width,
+            seek_before_input=seek_first,
+        )
+        mode = "fast_seek" if seek_first else "decode_seek"
+        try:
+            _run_subprocess(
+                cmd,
+                timeout=timeout,
+                text=False,
+                what=f"ffmpeg extract frame at {timestamp_sec}s ({mode})",
+            )
+            if _jpeg_output_usable(output_path):
+                return output_path
+            last_err = RuntimeError(
+                f"ffmpeg exited 0 but JPEG output missing or unusable at {timestamp_sec}s ({mode}): {output_path}"
+            )
+        except RuntimeError as exc:
+            last_err = exc
+        if output_path.exists():
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
+    assert last_err is not None
+    raise last_err
+
+
+def probe_circle_timeline(
+    video_url: str,
+    duration_sec: float,
+    output_dir: Path,
+    *,
+    interval_sec: float,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    player_first_name: Optional[str] = None,
+    player_last_name: Optional[str] = None,
+) -> list[tuple[float, bool]]:
+    """Sample the video at fixed time steps; mark each as on/off via detect_highlight_overlay.
+
+    Detects Veo-style red ring (with arrow notches) OR white pointer overlay; optional OCR
+    cross-checks the player's first/last name to suppress false positives when available.
+    """
+    require_binary("ffmpeg")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if duration_sec <= 0:
+        return []
+    interval = max(0.15, float(interval_sec))
+    max_probes = int(os.getenv("VIDEO_CIRCLE_MAX_PROBES", "2000"))
+    est = int(math.ceil(duration_sec / interval)) + 1
+    if est > max_probes:
+        interval = duration_sec / max(max_probes - 1, 1)
+    probe_estimate = int(math.ceil(duration_sec / interval)) + 1
+    require_name_match = (os.getenv("VIDEO_HIGHLIGHT_REQUIRE_NAME_MATCH") or "false").strip().lower() in {"1", "true", "yes", "on"}
+    out: list[tuple[float, bool]] = []
+    t = 0.0
+    idx = 0
+    while t <= duration_sec + 1e-6:
+        idx += 1
+        if cancel_check is not None and (idx % 8 == 1 or idx <= 2) and cancel_check():
+            raise RuntimeError("Review cancelled by user")
+        ts = round(min(max(t, 0.0), max(0.0, duration_sec - 0.02)), 3)
+        path = output_dir / f"probe_{idx:05d}.jpg"
+        if on_progress and (idx == 1 or idx % 25 == 0 or idx >= probe_estimate):
+            on_progress(
+                {
+                    "phase": "circle_timeline_probe",
+                    "probe_current": idx,
+                    "probe_estimate": probe_estimate,
+                    "progress_detail": (
+                        f"Scanning for highlight overlay: time sample {idx} / ~{probe_estimate} "
+                        f"(this can take several minutes on long videos)"
+                    ),
+                }
+            )
+        extract_frame_at_timestamp(video_url, ts, path, frame_width=640)
+        overlay = detect_highlight_overlay(
+            path,
+            player_first_name=player_first_name,
+            player_last_name=player_last_name,
+        )
+        is_on = bool(overlay.get("found"))
+        if is_on and require_name_match and (player_first_name or player_last_name):
+            is_on = bool(overlay.get("name_confirmed"))
+        out.append((ts, is_on))
+        t += interval
+    if on_progress:
+        on_progress(
+            {
+                "phase": "circle_timeline_probe_done",
+                "probe_current": idx,
+                "probe_estimate": probe_estimate,
+                "progress_detail": f"Finished timeline probe ({idx} samples).",
+            }
+        )
+    return out
+
+
+def circle_visibility_segments_from_probes(
+    probes: list[tuple[float, bool]],
+) -> list[tuple[float, float, float, int]]:
+    """
+    Contiguous True runs → (t_on, t_off, anchor_mid, probe_count).
+    t_on / t_off use probe timestamps (approximate visibility span).
+    """
+    if not probes:
+        return []
+    segments: list[tuple[float, float, float, int]] = []
+    i = 0
+    while i < len(probes):
+        if not probes[i][1]:
+            i += 1
+            continue
+        start = i
+        while i < len(probes) and probes[i][1]:
+            i += 1
+        run = probes[start:i]
+        t_on = run[0][0]
+        t_off = run[-1][0]
+        anchor = round((t_on + t_off) / 2.0, 2)
+        segments.append((t_on, t_off, anchor, len(run)))
+    return segments
+
+
+def extract_uniform_frames_in_range(
+    video_url: str,
+    t_lo: float,
+    t_hi: float,
+    output_dir: Path,
+    file_prefix: str,
+    *,
+    max_frames: int = 14,
+    frame_width: int = 720,
+    video_duration_sec: float | None = None,
+) -> list[FrameAsset]:
+    """Uniformly sample stills in [t_lo, t_hi] inclusive (for segment analysis)."""
+    require_binary("ffmpeg")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    t_lo = float(max(0.0, t_lo))
+    t_hi = float(max(t_lo + 0.05, t_hi))
+    t_cap = float("inf")
+    if video_duration_sec is not None and video_duration_sec > 0.12:
+        t_cap = max(0.0, float(video_duration_sec) - 0.08)
+    t_hi = min(t_hi, t_cap)
+    t_lo = min(t_lo, t_hi)
+    if max_frames <= 1:
+        times = [(t_lo + t_hi) / 2.0]
+    else:
+        times = [t_lo + (t_hi - t_lo) * (k / (max_frames - 1)) for k in range(max_frames)]
+    assets: list[FrameAsset] = []
+    for j, raw_t in enumerate(times):
+        ts = round(min(max(raw_t, 0.0), t_hi, t_cap), 3)
+        safe = f"{ts:.2f}".replace(".", "_")
+        p = output_dir / f"{file_prefix}_{j:02d}_{safe}.jpg"
+        extract_frame_at_timestamp(video_url, ts, p, frame_width=frame_width)
+        if not _jpeg_output_usable(p):
+            raise RuntimeError(f"Frame extract produced no usable JPEG at t={ts}s path={p}")
+        _stamp_timestamp(p, ts)
+        if not _jpeg_output_usable(p):
+            raise RuntimeError(f"Timestamp stamp produced no usable JPEG at t={ts}s path={p}")
+        overlay = detect_highlight_overlay(p)
+        assets.append(
+            FrameAsset(
+                timestamp_sec=ts,
+                image_path=p,
+                circle_found=bool(overlay.get("found")),
+                circle_center_x=float(overlay.get("center_x", 0.0)),
+                circle_center_y=float(overlay.get("center_y", 0.0)),
+                circle_radius=float(overlay.get("radius", 0.0)),
+            )
+        )
+    return assets
 
 
 def draw_player_circle(
@@ -557,6 +842,236 @@ def detect_red_circle(image_path: Path) -> dict:
         "radius": round(max(best["radius"], 0.03), 4),
         "score": round(best["score"], 4),
     }
+
+
+def _detect_red_ring_image(image: "np.ndarray") -> dict:
+    """Robust to ring overlays with arrow notches (Hough on closed red mask + contour fallback)."""
+    if image is None:
+        return {"found": False}
+    height, width = image.shape[:2]
+    min_dim = max(min(height, width), 1)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower1 = np.array([0, 80, 70], dtype=np.uint8)
+    upper1 = np.array([12, 255, 255], dtype=np.uint8)
+    lower2 = np.array([165, 80, 70], dtype=np.uint8)
+    upper2 = np.array([180, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower1, upper1) | cv2.inRange(hsv, lower2, upper2)
+    if cv2.countNonZero(mask) < 60:
+        return {"found": False}
+    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_close)
+    blurred = cv2.GaussianBlur(closed, (7, 7), 0)
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=int(max(min_dim * 0.10, 20)),
+        param1=80,
+        param2=18,
+        minRadius=int(max(min_dim * 0.025, 8)),
+        maxRadius=int(max(min_dim * 0.18, 20)),
+    )
+    if circles is not None and len(circles) > 0:
+        cx, cy, r = circles[0][0]
+        return {
+            "found": True,
+            "method": "hough_red_ring",
+            "center_x": round(float(cx) / width, 4),
+            "center_y": round(float(cy) / height, 4),
+            "radius": round(float(r) / min_dim, 4),
+        }
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best: dict[str, Any] | None = None
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < 80:
+            continue
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter <= 0:
+            continue
+        circularity = 4 * math.pi * area / (perimeter * perimeter)
+        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        if radius < 8:
+            continue
+        if circularity < 0.30:
+            continue
+        score = circularity * min(area / 400.0, 3.0)
+        candidate = {
+            "score": score,
+            "center_x": float(cx) / width,
+            "center_y": float(cy) / height,
+            "radius": float(radius) / min_dim,
+        }
+        if best is None or candidate["score"] > best["score"]:
+            best = candidate
+    if best is None:
+        return {"found": False}
+    return {
+        "found": True,
+        "method": "contour_red",
+        "center_x": round(best["center_x"], 4),
+        "center_y": round(best["center_y"], 4),
+        "radius": round(max(best["radius"], 0.03), 4),
+        "score": round(best["score"], 4),
+    }
+
+
+def _detect_white_pointer_image(image: "np.ndarray") -> dict:
+    """Tall, narrow bright/white near-vertical stroke (Veo / athlete-focus pointer)."""
+    if image is None:
+        return {"found": False}
+    height, width = image.shape[:2]
+    min_dim = max(min(height, width), 1)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        np.array([0, 0, 215], dtype=np.uint8),
+        np.array([180, 45, 255], dtype=np.uint8),
+    )
+    if cv2.countNonZero(mask) < 80:
+        return {"found": False}
+    k_vert = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 21))
+    mask_v = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_vert)
+    contours, _ = cv2.findContours(mask_v, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best: dict[str, Any] | None = None
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if ch < height * 0.10:
+            continue
+        if cw > width * 0.04:
+            continue
+        aspect = ch / max(cw, 1)
+        if aspect < 6:
+            continue
+        roi = mask[y : y + ch, x : x + cw]
+        density = cv2.countNonZero(roi) / max(cw * ch, 1)
+        if density < 0.45:
+            continue
+        score = float(density) * float(aspect)
+        cand = {
+            "score": score,
+            "center_x": (x + cw / 2.0) / width,
+            "center_y": (y + ch / 2.0) / height,
+            "radius": max(ch, cw) / min_dim / 2.0,
+            "bbox": (int(x), int(y), int(cw), int(ch)),
+        }
+        if best is None or cand["score"] > best["score"]:
+            best = cand
+    if best is None:
+        return {"found": False}
+    return {
+        "found": True,
+        "method": "white_pointer",
+        "center_x": round(best["center_x"], 4),
+        "center_y": round(best["center_y"], 4),
+        "radius": round(max(best["radius"], 0.03), 4),
+        "score": round(best["score"], 4),
+        "bbox": best["bbox"],
+    }
+
+
+_TESS_AVAILABLE_CACHE: Optional[bool] = None
+
+
+def _tesseract_available() -> bool:
+    """Cached check: pytesseract import + system 'tesseract' binary on PATH (env opt-out honored)."""
+    global _TESS_AVAILABLE_CACHE
+    if _TESS_AVAILABLE_CACHE is not None:
+        return _TESS_AVAILABLE_CACHE
+    mode = (os.getenv("VIDEO_HIGHLIGHT_DETECTOR_OCR") or "auto").strip().lower()
+    if mode in {"off", "false", "0", "no"}:
+        _TESS_AVAILABLE_CACHE = False
+        return False
+    try:
+        import pytesseract  # noqa: F401
+    except ImportError:
+        _TESS_AVAILABLE_CACHE = False
+        return False
+    if shutil.which("tesseract") is None:
+        _TESS_AVAILABLE_CACHE = False
+        return False
+    _TESS_AVAILABLE_CACHE = True
+    return True
+
+
+def _ocr_text_in_roi(image: "np.ndarray", bbox: tuple[int, int, int, int]) -> str:
+    if not _tesseract_available():
+        return ""
+    try:
+        import pytesseract
+    except ImportError:
+        return ""
+    height, width = image.shape[:2]
+    x, y, cw, ch = bbox
+    pad_x = max(int(width * 0.10), 80)
+    pad_y = max(int(ch * 0.20), 20)
+    x0 = max(0, x - pad_x)
+    y0 = max(0, y - pad_y)
+    x1 = min(width, x + cw + pad_x)
+    y1 = min(height, y + ch + pad_y)
+    roi = image[y0:y1, x0:x1]
+    if roi.size == 0:
+        return ""
+    try:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, th = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        text = pytesseract.image_to_string(th, config="--psm 6")
+    except Exception:  # noqa: BLE001
+        return ""
+    return (text or "").strip()
+
+
+def _bbox_from_circle(result: dict, image: "np.ndarray") -> tuple[int, int, int, int]:
+    height, width = image.shape[:2]
+    min_dim = max(min(height, width), 1)
+    cx = float(result.get("center_x") or 0.5)
+    cy = float(result.get("center_y") or 0.5)
+    rr = float(result.get("radius") or 0.05)
+    px = int(cx * width)
+    py = int(cy * height)
+    pr = max(int(rr * min_dim), 12)
+    return (max(0, px - pr), max(0, py - pr), 2 * pr, 2 * pr)
+
+
+def detect_highlight_overlay(
+    image_path: Path,
+    *,
+    player_first_name: Optional[str] = None,
+    player_last_name: Optional[str] = None,
+) -> dict:
+    """Combined detector for Veo-style red ring (with notches) + white pointer overlay.
+
+    Returns {"found": bool, "method": str, "center_x", "center_y", "radius", optional "ocr_text",
+    "name_confirmed"}. OR'd across enabled detectors; OCR is best-effort and only adds confirmation.
+    """
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return {"found": False, "method": "none"}
+    enable_red = (os.getenv("VIDEO_HIGHLIGHT_RED_RING") or "true").strip().lower() not in {"0", "false", "off", "no"}
+    enable_white = (os.getenv("VIDEO_HIGHLIGHT_WHITE_POINTER") or "true").strip().lower() not in {"0", "false", "off", "no"}
+
+    result: dict[str, Any] = {"found": False, "method": "none"}
+    if enable_red:
+        r = _detect_red_ring_image(image)
+        if r.get("found"):
+            result = {**r}
+    if not result.get("found") and enable_white:
+        p = _detect_white_pointer_image(image)
+        if p.get("found"):
+            result = {**p}
+
+    if result.get("found") and (player_first_name or player_last_name):
+        bbox = result.get("bbox") or _bbox_from_circle(result, image)
+        text = _ocr_text_in_roi(image, bbox)
+        if text:
+            result["ocr_text"] = text[:120]
+            tl = text.lower()
+            for name in (player_first_name, player_last_name):
+                clean = (name or "").strip().lower()
+                if clean and len(clean) >= 3 and clean in tl:
+                    result["name_confirmed"] = name
+                    break
+    return result
 
 
 def _stamp_timestamp(image_path: Path, timestamp: float) -> None:

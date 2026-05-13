@@ -16,6 +16,7 @@ from app.services.player_key import (
 )
 from app.services.player_memory_service import delete_chunks_for_source_prefix, insert_chunks
 from app.services.text_chunking import chunk_sheet_row_document
+from app.services.agent_job_cancel import merge_agent_job_result_json
 from app.services.workspace_enqueue import enqueue_feedback_delegate_job
 
 
@@ -166,12 +167,14 @@ def _enqueue_auto_feedback_if_ready(*, db: Session, workspace_id: int, row_index
     )
     db.commit()
     db.refresh(job)
-    ok = enqueue_feedback_delegate_job(job.id)
-    if not ok:
+    rq_rid = enqueue_feedback_delegate_job(job.id)
+    if not rq_rid:
         job.status = "FAILED"
         job.error_message = "Failed to enqueue auto feedback job."
         db.commit()
         return 0
+    merge_agent_job_result_json(job, {"rq_job_id": rq_rid})
+    db.commit()
     return 1
 
 
