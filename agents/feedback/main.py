@@ -9,6 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -35,6 +36,46 @@ REVIEWS_DIR = DATA_DIR / "reviews"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 
+def _public_origin() -> str | None:
+    """Configured public origin (scheme + host[+port]) without trailing slash, or None."""
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    return base or None
+
+
+def _rewrite_origin(url: str) -> str:
+    """If PUBLIC_BASE_URL is set, swap the scheme+netloc of `url` so clients get the public host.
+
+    Keeps the path, query and fragment untouched. Returns the input unchanged when no
+    public origin is configured.
+    """
+    public_base = _public_origin()
+    if not public_base:
+        return url
+    pub = urlparse(public_base)
+    parsed = urlparse(url)
+    return urlunparse(
+        (
+            pub.scheme or parsed.scheme,
+            pub.netloc or parsed.netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def _public_url_for(request: Request, name: str, **path_params: Any) -> str:
+    """request.url_for with the origin rewritten to PUBLIC_BASE_URL when set.
+
+    The worker calls this service over the internal docker network (e.g.
+    http://feedback-agent:5055/), so without this rewrite FastAPI echoes back the
+    internal hostname in every absolute URL. Setting PUBLIC_BASE_URL fixes status_url,
+    watch_url, manual_image_url and focus-frame image_url for external clients.
+    """
+    return _rewrite_origin(str(request.url_for(name, **path_params)))
+
+
 def _public_review_url(review_id: str) -> str:
     """Build the user-facing /review/{id} URL.
 
@@ -42,7 +83,7 @@ def _public_review_url(review_id: str) -> str:
     HOST:PORT only for local dev — that fallback will be unreachable from remote
     browsers, so we warn loudly at startup when it's the only choice.
     """
-    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    public_base = _public_origin()
     if public_base:
         return f"{public_base}/review/{review_id}"
     host = os.getenv("HOST", "127.0.0.1")
@@ -97,13 +138,11 @@ def _load_job(review_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _absolute_url(request: Request, path: str) -> str:
-    public_base_url = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-    if public_base_url:
-        return f"{public_base_url}{path}"
+    public_base = _public_origin()
+    if public_base:
+        return f"{public_base}{path if path.startswith('/') else '/' + path}"
     base = str(request.base_url).rstrip("/")
-    if path.startswith("/"):
-        return f"{base}{path}"
-    return f"{base}/{path}"
+    return f"{base}{path if path.startswith('/') else '/' + path}"
 
 
 def _build_manual_context_sequence(
@@ -341,8 +380,8 @@ async def create_review(request: Request) -> JSONResponse:
     )
     thread.start()
 
-    status_url = str(request.url_for("job_status", review_id=review_id))
-    watch_url = str(request.url_for("job_page", review_id=review_id))
+    status_url = _public_url_for(request, "job_status", review_id=review_id)
+    watch_url = _public_url_for(request, "job_page", review_id=review_id)
     return JSONResponse(
         {
             "id": review_id,
@@ -553,8 +592,8 @@ async def create_manual_feedback(request: Request, review_id: str) -> JSONRespon
         "manual_context_window_sec": 2,
         "feedback_prompt": feedback_prompt,
         "player_name": player_name,
-        "manual_image_url": str(
-            request.url_for("manual_feedback_image", review_id=review_id, marker_id=marker_id)
+        "manual_image_url": _public_url_for(
+            request, "manual_feedback_image", review_id=review_id, marker_id=marker_id
         ),
     }
     markers.append(marker)
@@ -568,8 +607,8 @@ async def create_manual_feedback(request: Request, review_id: str) -> JSONRespon
         for item in markers
         if item["timestamp_sec"] == marker["timestamp_sec"] and item["coaching_note"] == marker["coaching_note"]
     )
-    stored_marker["manual_image_url"] = str(
-        request.url_for("manual_feedback_image", review_id=review_id, marker_id=stored_marker["id"])
+    stored_marker["manual_image_url"] = _public_url_for(
+        request, "manual_feedback_image", review_id=review_id, marker_id=stored_marker["id"]
     )
     save_json(_review_path(review_id), review)
     return JSONResponse({"ok": True, "marker": stored_marker})
@@ -713,8 +752,8 @@ async def marker_focus_frame(request: Request, review_id: str, marker_id: int) -
                 "confidence": localization["confidence"],
                 "note": localization["note"],
                 "score": localization["score"],
-                "image_url": str(
-                    request.url_for("marker_focus_frame_image", review_id=review_id, marker_id=marker_id)
+                "image_url": _public_url_for(
+                    request, "marker_focus_frame_image", review_id=review_id, marker_id=marker_id
                 ),
             },
         )
@@ -723,7 +762,9 @@ async def marker_focus_frame(request: Request, review_id: str, marker_id: int) -
         "found": True,
         "confidence": "low",
         "note": "",
-        "image_url": str(request.url_for("marker_focus_frame_image", review_id=review_id, marker_id=marker_id)),
+        "image_url": _public_url_for(
+            request, "marker_focus_frame_image", review_id=review_id, marker_id=marker_id
+        ),
     }
     return JSONResponse(meta)
 

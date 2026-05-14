@@ -616,6 +616,24 @@
       let startY = 0;
       let currentBox = null;
 
+      // Auto-pause-at-marker state. The video plays until the next marker, pauses, opens
+      // that marker's feedback, and waits for the user to press play again to continue.
+      const AUTO_PAUSE_EPS = 0.05; // seconds; ignore the marker we just paused on
+      let pendingAutoStop = null;
+
+      function sortedMarkers() {
+        return markers.slice().sort((a, b) => a.timestamp_sec - b.timestamp_sec);
+      }
+
+      function nextMarkerAfter(timeSec) {
+        const cutoff = timeSec + AUTO_PAUSE_EPS;
+        return sortedMarkers().find((m) => m.timestamp_sec > cutoff) || null;
+      }
+
+      function refreshPendingAutoStop() {
+        pendingAutoStop = nextMarkerAfter(player.currentTime);
+      }
+
       function formatTime(totalSeconds) {
         const sec = Math.max(0, Math.floor(totalSeconds));
         const minutes = Math.floor(sec / 60);
@@ -852,6 +870,31 @@
         bboxLayer.classList.add("disabled");
         clearBox();
         manualStatus.textContent = "Pause at a moment you want to review.";
+        refreshPendingAutoStop();
+        if (pendingAutoStop) {
+          videoStatus.textContent = `Playing — will auto-pause at next marker (${formatTime(pendingAutoStop.timestamp_sec)}).`;
+        }
+      });
+
+      // User dragged the playhead — recompute which marker is next.
+      player.addEventListener("seeked", () => {
+        if (!player.paused) refreshPendingAutoStop();
+      });
+
+      // Core auto-pause loop: as soon as currentTime crosses the next marker, pause
+      // the video, snap to the marker time, and open its feedback panel.
+      player.addEventListener("timeupdate", () => {
+        if (player.paused || !pendingAutoStop) return;
+        if (player.currentTime + AUTO_PAUSE_EPS < pendingAutoStop.timestamp_sec) return;
+        const stoppedAt = pendingAutoStop;
+        pendingAutoStop = null;
+        player.pause();
+        player.currentTime = stoppedAt.timestamp_sec;
+        showDetail(stoppedAt);
+        const remaining = nextMarkerAfter(stoppedAt.timestamp_sec);
+        videoStatus.textContent = remaining
+          ? `Paused at marker (${formatTime(stoppedAt.timestamp_sec)}). Press play for the next marker at ${formatTime(remaining.timestamp_sec)}.`
+          : `Paused at the last marker (${formatTime(stoppedAt.timestamp_sec)}).`;
       });
 
       player.addEventListener("error", () => {
@@ -859,7 +902,7 @@
       });
 
       player.addEventListener("loadedmetadata", () => {
-        videoStatus.textContent = `Video loaded. Duration: ${formatTime(player.duration || duration)}.`;
+        videoStatus.textContent = `Video loaded. Duration: ${formatTime(player.duration || duration)}. Press play to step through markers.`;
       });
 
       renderMarkers();

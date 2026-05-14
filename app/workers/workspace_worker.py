@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -28,6 +29,50 @@ from app.services.workspace_service import (
 )
 
 _SYNC_SHEET_KV_HEADERS_LOWER = frozenset(h.strip().lower() for h in SYNC_DESTINATION_HEADERS)
+
+# Hosts that serve player/watch HTML pages, not direct media. ffmpeg/ffprobe cannot consume
+# these — auto-fall back to text_only coaching when one of these is submitted. Override via
+# FEEDBACK_TEXT_ONLY_HOSTS env var (comma-separated). Match is suffix-based on host (case-insensitive).
+_DEFAULT_TEXT_ONLY_HOSTS = (
+    "go.traceup.com",
+    "traceup.com",
+    "hudl.com",
+    "app.hudl.com",
+    "veo.co",
+    "app.veo.co",
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "vimeo.com",
+)
+
+# File extensions ffmpeg can stream directly. If present, never force text_only even if host matches.
+_DIRECT_MEDIA_EXTENSIONS = (".mp4", ".mov", ".webm", ".mkv", ".m3u8", ".mpd", ".ts", ".m4v")
+
+
+def _is_page_url_requiring_text_only(video_url: str) -> tuple[bool, str | None]:
+    """Return (force_text_only, matched_host). Detects watch/player pages where ffprobe fails."""
+    url = (video_url or "").strip()
+    if not url:
+        return False, None
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False, None
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    if any(path.endswith(ext) for ext in _DIRECT_MEDIA_EXTENSIONS):
+        return False, None
+    override = (os.getenv("FEEDBACK_TEXT_ONLY_HOSTS") or "").strip()
+    if override:
+        hosts = tuple(h.strip().lower() for h in override.split(",") if h.strip())
+    else:
+        hosts = _DEFAULT_TEXT_ONLY_HOSTS
+    for h in hosts:
+        if host == h or host.endswith("." + h):
+            return True, h
+    return False, None
 
 
 def feedback_agent_poll_progress_hint(result_json: str | None) -> str | None:
@@ -225,6 +270,34 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             db.commit()
             return {"ok": False, "error": "video_url_required"}
 
+        auto_text_only_host: str | None = None
+        if not text_only and video_url:
+            should_force, matched_host = _is_page_url_requiring_text_only(video_url)
+            if should_force:
+                text_only = True
+                auto_text_only_host = matched_host
+                info(
+                    "feedback_delegate_auto_text_only",
+                    agent_job_id=agent_job_id,
+                    matched_host=matched_host,
+                    video_url=video_url,
+                )
+                try:
+                    existing = json.loads(job.result_json or "{}")
+                except json.JSONDecodeError:
+                    existing = {}
+                existing["auto_text_only"] = {
+                    "applied": True,
+                    "matched_host": matched_host,
+                    "reason": (
+                        "URL points to a watch/player web page (not a direct media stream); "
+                        "ffprobe cannot decode it. Falling back to written coaching."
+                    ),
+                    "at": datetime.now(UTC).isoformat(),
+                }
+                job.result_json = json.dumps(existing, ensure_ascii=True)
+                db.commit()
+
         body: dict[str, Any] = {
             "text_only": text_only,
             "video_url": video_url,
@@ -279,6 +352,7 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             "feedback_delegate_context",
             agent_job_id=agent_job_id,
             text_only=text_only,
+            auto_text_only_host=auto_text_only_host,
             shared_context_attached=bool(shared),
             shared_context_chars=len(shared or ""),
             shared_context_sheet_outcome=str((shared_sheet_debug or {}).get("outcome") or ""),
