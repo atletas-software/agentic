@@ -5,10 +5,15 @@ or when you have a folder of positive frame images ready for training prep::
 
     cd yolo_model
     python -m scripts.import_dataset \
-        --positives-dir /path/to/positive-image \
         --version v1.0.0 \
-        --val-ratio 0.2 \
-        --bootstrap-labels
+        --val-ratio 0.2
+
+By default the script reads from:
+
+- ``yolo_model/dataset/sources/positives``
+- ``yolo_model/dataset/sources/negatives`` (optional, empty is fine)
+
+Override with ``--positives-dir`` / ``--negatives-dir`` when needed.
 
 Output layout (under ``dataset/<version>/``)::
 
@@ -44,6 +49,10 @@ from agents.feedback.video_utils import _bbox_from_circle, detect_highlight_over
 LOG = logging.getLogger("highlight.import_dataset")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+YOLO_MODEL_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATASET_ROOT = YOLO_MODEL_ROOT / "dataset"
+DEFAULT_POSITIVES_DIR = DEFAULT_DATASET_ROOT / "sources" / "positives"
+DEFAULT_NEGATIVES_DIR = DEFAULT_DATASET_ROOT / "sources" / "negatives"
 
 
 def _iter_images(directory: Path) -> list[Path]:
@@ -195,11 +204,26 @@ def _stage_split(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--positives-dir", type=Path, required=True, help="Folder of positive labeled frames.")
-    parser.add_argument("--negatives-dir", type=Path, default=None, help="Optional folder of hard-negative frames.")
+    parser.add_argument(
+        "--positives-dir",
+        type=Path,
+        default=DEFAULT_POSITIVES_DIR,
+        help="Folder of positive labeled frames (default: yolo_model/dataset/sources/positives).",
+    )
+    parser.add_argument(
+        "--negatives-dir",
+        type=Path,
+        default=DEFAULT_NEGATIVES_DIR,
+        help="Folder of hard-negative frames (default: yolo_model/dataset/sources/negatives).",
+    )
     parser.add_argument("--labels-dir", type=Path, default=None, help="Optional Roboflow YOLO labels/ export root.")
     parser.add_argument("--version", default="v1.0.0", help="Dataset version folder name.")
-    parser.add_argument("--dataset-root", type=Path, default=Path("dataset"), help="Parent of versioned datasets.")
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=DEFAULT_DATASET_ROOT,
+        help="Parent of versioned datasets (default: yolo_model/dataset).",
+    )
     parser.add_argument("--val-ratio", type=float, default=0.2, help="Fraction of images for val (0–0.5).")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
