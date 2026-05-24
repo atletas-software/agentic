@@ -103,6 +103,18 @@ def _copy_image(src: Path, dest: Path) -> None:
     cv2.imwrite(str(dest), image)
 
 
+def _copy_to_sources_if_needed(src: Path, dest_dir: Path) -> None:
+    """Copy into dataset/sources unless source is already there."""
+    dest = dest_dir / src.name
+    try:
+        if src.resolve() == dest.resolve():
+            return
+    except FileNotFoundError:
+        # If either path cannot resolve yet, fall back to copy behavior.
+        pass
+    shutil.copy2(src, dest)
+
+
 def _write_data_yaml(root: Path) -> None:
     content = (
         f"path: {root.resolve()}\n"
@@ -268,11 +280,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sources_pos.mkdir(parents=True, exist_ok=True)
     for src in positive_images:
-        shutil.copy2(src, sources_pos / src.name)
+        _copy_to_sources_if_needed(src, sources_pos)
     if negative_images:
         sources_neg.mkdir(parents=True, exist_ok=True)
         for src in negative_images:
-            shutil.copy2(src, sources_neg / src.name)
+            _copy_to_sources_if_needed(src, sources_neg)
 
     rng = random.Random(args.seed)
     pos_shuffled = positive_images[:]
