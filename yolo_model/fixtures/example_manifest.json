@@ -1,0 +1,17 @@
+{
+  "fixtures": [
+    {
+      "name": "example_veo_clip",
+      "video": "./samples/example_veo.mp4",
+      "events": [
+        {"t_on": 4.2, "t_off": 6.1},
+        {"t_on": 18.5, "t_off": 21.3}
+      ]
+    },
+    {
+      "name": "example_negative_red_jerseys",
+      "video": "./samples/negatives/red_jerseys_01.mp4",
+      "events": []
+    }
+  ]
+}

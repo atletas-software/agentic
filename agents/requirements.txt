@@ -8,3 +8,7 @@ opencv-python-headless==4.11.0.86
 jinja2==3.1.6
 python-multipart==0.0.20
 pytesseract==0.3.13
+# Highlight overlay detection (YOLOv8). Torch is pulled by ultralytics; we pin the
+# CPU build explicitly via --extra-index-url in the Dockerfile to keep the image small.
+ultralytics==8.3.27
+torch==2.4.1

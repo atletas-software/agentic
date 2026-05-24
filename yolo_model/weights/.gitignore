@@ -1,0 +1,8 @@
+# Model weights are large binaries; do not commit them. Track them in an object
+# store (S3 / GCS) or a model registry (W&B Artifacts, MLflow Models). The
+# matching .card.md files MUST be committed.
+*.pt
+*.onnx
+*.engine
+!.gitignore
+!README.md

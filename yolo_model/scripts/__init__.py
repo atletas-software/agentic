@@ -1,0 +1,13 @@
+"""Offline training, evaluation, and pipeline-validation scripts for the
+highlight-overlay YOLO detector.
+
+Nothing in this package is imported by the deployed feedback agent. Run these
+modules as scripts from the repository root:
+
+    python -m yolo_model.scripts.prepare_dataset ...
+    python -m yolo_model.scripts.train ...
+    python -m yolo_model.scripts.evaluate ...
+    python -m yolo_model.scripts.evaluate_pipeline ...
+
+See ``yolo_model/TRAINING_GUIDE.md`` for the end-to-end workflow.
+"""

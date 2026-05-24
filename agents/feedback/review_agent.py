@@ -26,6 +26,26 @@ from agents.feedback.video_utils import (
     probe_circle_timeline,
     probe_duration,
 )
+# YOLO pipeline lives in a separate package so a missing weights file / missing
+# ultralytics install never breaks startup of the legacy code path.
+try:
+    from agents.feedback.highlight import (
+        HighlightEvent,
+        PipelineResult,
+        run_yolo_pipeline,
+    )
+    from agents.feedback.highlight.yolo_detector import HighlightDetectorUnavailable
+except Exception as _yolo_import_exc:  # noqa: BLE001 — defensive: any import error means "no yolo"
+    HighlightEvent = None  # type: ignore[assignment]
+    PipelineResult = None  # type: ignore[assignment]
+    run_yolo_pipeline = None  # type: ignore[assignment]
+
+    class HighlightDetectorUnavailable(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    _YOLO_IMPORT_ERROR: Exception | None = _yolo_import_exc
+else:
+    _YOLO_IMPORT_ERROR = None
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -63,6 +83,294 @@ def _subsample_frame_assets(assets: list[FrameAsset], max_n: int) -> list[FrameA
     return picked
 
 
+def _selected_detector() -> str:
+    raw = (os.getenv("VIDEO_HIGHLIGHT_DETECTOR") or "hsv").strip().lower()
+    if raw in {"yolo", "yolov8"}:
+        return "yolo"
+    return "hsv"
+
+
+def _try_yolo_segment_review(
+    *,
+    review_id: str,
+    video_url: str,
+    base_dir: Path,
+    storyboards_dir: Path,
+    sport: str,
+    player_focus: str,
+    analysis_scope: str,
+    coaching_focus: str,
+    player_memory_context: str | None,
+    shared_context: str | None,
+    player_memory_retrieval_debug: dict[str, Any] | None,
+    shared_context_sheet_debug: dict[str, Any] | None,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> dict | None:
+    """YOLO highlight pipeline → per-event vision + overall synthesis.
+
+    Returns ``None`` if the YOLO detector is unavailable (so the caller falls
+    back to the legacy HSV path) or if no events were found.
+    """
+    if run_yolo_pipeline is None:
+        return None
+    try:
+        pipeline = run_yolo_pipeline(
+            video_url=video_url,
+            base_dir=base_dir,
+            on_progress=on_progress,
+            cancel_check=cancel_check,
+        )
+    except HighlightDetectorUnavailable as exc:
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "highlight_yolo_unavailable",
+                    "progress_detail": f"YOLO detector unavailable: {exc}. Falling back to HSV.",
+                }
+            )
+        return None
+
+    duration_sec = float(pipeline.duration_sec)
+    if not pipeline.events:
+        return None
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "highlight_yolo_vision",
+                "segment_total": len(pipeline.events),
+                "segment_current": 0,
+                "progress_detail": (
+                    f"Running vision model on {len(pipeline.events)} event window(s)…"
+                ),
+            }
+        )
+
+    vision_debug: list[dict[str, Any]] = []
+    episode_blocks: list[str] = []
+    moments: list[ReviewMoment] = []
+    used_ts: set[float] = set()
+    storyboard_frame_assets: list[FrameAsset] = []
+    segment_meta: list[dict[str, Any]] = []
+
+    for asset_record in pipeline.events:
+        _raise_if_cancelled(cancel_check)
+        ev = asset_record.event
+        idx = ev.index
+        total = len(pipeline.events)
+
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "highlight_yolo_vision",
+                    "segment_total": total,
+                    "segment_current": idx,
+                    "progress_detail": (
+                        f"Event {idx}/{total}: calling vision model on "
+                        f"{len(asset_record.frame_paths)} frame(s)…"
+                    ),
+                }
+            )
+
+        if not asset_record.frame_paths:
+            vision_debug.append(
+                {
+                    "event_index": idx,
+                    "outcome": "skipped",
+                    "reason": "no_frames",
+                    "t_on": ev.t_on,
+                    "t_off": ev.t_off,
+                }
+            )
+            continue
+
+        vis_out, vdbg = vision_analyze_circle_segment(
+            frame_paths=asset_record.frame_paths,
+            t_lo=ev.t_lo,
+            t_on=ev.t_on,
+            t_off=ev.t_off,
+            t_hi=ev.t_hi,
+            sport=sport,
+            player_focus=player_focus,
+            segment_index=idx,
+            segment_total=total,
+        )
+        vdbg["event_index"] = idx
+        vdbg["mean_conf"] = round(ev.mean_conf, 4)
+        vdbg["peak_conf"] = round(ev.peak_conf, 4)
+        vdbg["probe_count"] = ev.probe_count
+        vdbg["clip_mode"] = asset_record.clip_mode
+        vision_debug.append(vdbg)
+
+        episode_blocks.append(
+            "\n".join(
+                [
+                    f"### Episode {idx}/{total}  anchor≈{ev.anchor_sec:.2f}s  "
+                    f"circle≈{ev.t_on:.2f}s–{ev.t_off:.2f}s  "
+                    f"(YOLO peak conf={ev.peak_conf:.2f}, probes={ev.probe_count})",
+                    f"- category: {vis_out.category}",
+                    f"- sentiment: {vis_out.sentiment}",
+                    f"- coaching: {vis_out.coaching_note}",
+                ]
+            )
+        )
+
+        anchor_ts = round(float(ev.anchor_sec), 2)
+        while anchor_ts in used_ts:
+            anchor_ts = round(anchor_ts + 0.05, 2)
+        used_ts.add(anchor_ts)
+        moments.append(
+            ReviewMoment(
+                timestamp_sec=anchor_ts,
+                category=vis_out.category,
+                sentiment=vis_out.sentiment,
+                coaching_note=vis_out.coaching_note,
+            )
+        )
+
+        for path, ts, bbox in zip(
+            asset_record.frame_paths,
+            asset_record.frame_timestamps,
+            asset_record.frame_bboxes,
+        ):
+            storyboard_frame_assets.append(
+                FrameAsset(
+                    timestamp_sec=float(ts),
+                    image_path=path,
+                    circle_found=bool(bbox),
+                    circle_center_x=float(bbox.get("x", 0.0) + bbox.get("w", 0.0) / 2.0) if bbox else 0.0,
+                    circle_center_y=float(bbox.get("y", 0.0) + bbox.get("h", 0.0) / 2.0) if bbox else 0.0,
+                    circle_radius=float(max(bbox.get("w", 0.0), bbox.get("h", 0.0)) / 2.0) if bbox else 0.0,
+                )
+            )
+
+        segment_meta.append(
+            {
+                "index": idx,
+                "t_on": ev.t_on,
+                "t_off": ev.t_off,
+                "t_lo": ev.t_lo,
+                "t_hi": ev.t_hi,
+                "anchor_sec": ev.anchor_sec,
+                "mean_conf": round(ev.mean_conf, 4),
+                "peak_conf": round(ev.peak_conf, 4),
+                "probe_count": ev.probe_count,
+                "frame_count": len(asset_record.frame_paths),
+                "clip_mode": asset_record.clip_mode,
+                "frames_dir": str(asset_record.frames_dir),
+                "clip_path": str(asset_record.clip_path) if asset_record.clip_path else None,
+                "meta_path": str(asset_record.meta_path) if asset_record.meta_path else None,
+                "annotated_dir": str(asset_record.annotated_dir) if asset_record.annotated_dir else None,
+            }
+        )
+
+    if not moments:
+        return None
+
+    moments.sort(key=lambda m: m.timestamp_sec)
+    segments_markdown = "\n\n".join(episode_blocks)
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "circle_overall_synthesis",
+                "segment_total": len(pipeline.events),
+                "segment_current": len(pipeline.events),
+                "progress_detail": "Building storyboards and synthesizing overall assessment…",
+            }
+        )
+
+    merged_assets = _merge_frame_assets_by_path(storyboard_frame_assets)
+    max_sb_frames = int((os.getenv("VIDEO_CIRCLE_OVERALL_MAX_FRAMES_FOR_STORYBOARD") or "48").strip() or "48")
+    storyboard_source = _subsample_frame_assets(merged_assets, max_sb_frames)
+    storyboards = create_storyboards(storyboard_source, storyboards_dir)
+
+    _raise_if_cancelled(cancel_check)
+    prompt_text = (BASE_DIR / "video_feedback_agent_system_prompt.md").read_text(encoding="utf-8")
+    overall, overall_dbg = synthesize_overall_from_circle_segments(
+        prompt_tone=prompt_text,
+        sport=sport,
+        player_focus=player_focus,
+        duration_sec=duration_sec,
+        analysis_scope=analysis_scope,
+        coaching_focus=coaching_focus,
+        segments_markdown=segments_markdown,
+        storyboard_paths=storyboards,
+        player_memory_context=player_memory_context,
+        shared_context=shared_context,
+    )
+
+    review_payload = VideoFeedbackReview(
+        video_summary=VideoSummary(
+            sport=sport,
+            player_focus=player_focus,
+            duration_sec=duration_sec,
+            analysis_scope=analysis_scope,
+        ),
+        overall_assessment=overall,
+        moments=moments,
+    )
+    allowed_timestamps = [round(float(m.timestamp_sec), 2) for m in moments]
+
+    cap_debug: dict[str, Any] = {
+        "mode": "yolo-event-episodes",
+        "outcome": "success",
+        "event_count": len(pipeline.events),
+        "segment_definitions": segment_meta,
+    }
+    cap_debug.update(pipeline.to_debug_dict())
+
+    llm_debug: dict[str, Any] = {
+        "analysis_kind": "yolo-event-episodes",
+        "circle_segment_vision": vision_debug,
+        "circle_segment_overall": overall_dbg,
+    }
+
+    review = _to_review_document(
+        review_id=review_id,
+        video_url=video_url,
+        duration_sec=duration_sec,
+        review_payload=review_payload,
+        analysis_mode="yolo-event-episodes",
+        allowed_timestamps=allowed_timestamps,
+    )
+    review["circle_segments"] = segment_meta
+    review["events_index"] = str(pipeline.events_index_path) if pipeline.events_index_path else None
+
+    video_pre: dict[str, Any] = {
+        "tactical_pipeline_spec": "agents/feedback/highlight/pipeline.py (YOLO detector)",
+        "detector": "yolo",
+        "events": len(pipeline.events),
+        "frames_in_event_windows": sum(len(a.frame_paths) for a in pipeline.events),
+        "frames_sent_to_storyboard": len(storyboard_source),
+        "storyboard_pages": len(storyboards),
+        "video_cached": bool(pipeline.cached.cached),
+    }
+
+    review["generation_debug"] = {
+        "analysis_kind": "yolo-event-episodes",
+        "openai": llm_debug,
+        "shared_context_sheet": shared_context_sheet_debug,
+        "player_memory_vector_retrieval": player_memory_retrieval_debug,
+        "video_preprocess": video_pre,
+        "video_highlight_captions": cap_debug,
+    }
+    review["video_context"] = {
+        "description": (
+            "YOLOv8 highlight-overlay detector → coarse (1s) + fine (0.2s) two-pass probe → "
+            "hysteresis + IoU-aware merge → per-event JPEG frames + mp4 clip + bbox metadata. "
+            "Each event window [t_on - pad, t_off + pad] is sent to the vision model for one "
+            "coaching marker; storyboards are built from the union of all event frames."
+        ),
+        "combined_highlight_text": segments_markdown[:60_000],
+        "preprocess": video_pre,
+        "highlight_caption_pass": cap_debug,
+    }
+    save_json(base_dir / "review.json", review)
+    return review
+
+
 def _try_circle_segment_episode_review(
     *,
     review_id: str,
@@ -86,6 +394,34 @@ def _try_circle_segment_episode_review(
     Timeline probe → contiguous circle visibility → per-episode window [t_on−pad, t_off+pad]
     → vision → one marker per episode + overall synthesis. Returns None to use legacy path.
     """
+    if _selected_detector() == "yolo":
+        yolo_review = _try_yolo_segment_review(
+            review_id=review_id,
+            video_url=video_url,
+            base_dir=base_dir,
+            storyboards_dir=storyboards_dir,
+            sport=sport,
+            player_focus=player_focus,
+            analysis_scope=analysis_scope,
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
+            player_memory_retrieval_debug=player_memory_retrieval_debug,
+            shared_context_sheet_debug=shared_context_sheet_debug,
+            on_progress=on_progress,
+            cancel_check=cancel_check,
+        )
+        if yolo_review is not None:
+            return yolo_review
+        # Fall through to legacy HSV path on YOLO unavailable / zero events.
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "highlight_yolo_fallback",
+                    "progress_detail": "Falling back to HSV timeline probe.",
+                }
+            )
+
     duration_sec = probe_duration(video_url)
     _raise_if_cancelled(cancel_check)
     if on_progress:

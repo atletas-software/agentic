@@ -1,0 +1,12 @@
+opencv-python
+ultralytics
+ffmpeg-python
+numpy
+pandas
+tqdm
+Pillow
+mediapipe
+scikit-learn
+torch
+torchvision
+supervision

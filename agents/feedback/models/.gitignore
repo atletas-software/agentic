@@ -1,0 +1,6 @@
+# Model weights are large binaries; do not commit them. The Docker build copies
+# whatever lives in this directory at image-build time, so place trained .pt
+# files here on the deploy host (or fetch them from object storage in CI).
+*.pt
+!.gitignore
+!README.md

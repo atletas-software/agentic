@@ -1,0 +1,5 @@
+path: /Users/mac/Documents/projects/yuri/agentic/yolo_model/dataset/v1.0.0
+train: images/train
+val: images/val
+names:
+  0: highlight_overlay

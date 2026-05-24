@@ -8,13 +8,20 @@ ENV PYTHONPATH=/app
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr \
+    && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY agents/requirements.txt /tmp/agents/requirements.txt
 COPY agents/feedback/requirements.txt /tmp/agents/feedback/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/agents/feedback/requirements.txt
+# Install CPU-only torch wheel first so ultralytics doesn't pull the CUDA build.
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
+        torch==2.4.1 \
+    && pip install --no-cache-dir -r /tmp/agents/feedback/requirements.txt
 
+# Copy the feedback agent source AND any pre-baked highlight YOLO weights
+# (agents/feedback/models/highlight_yolo_v1.pt). The weights file is optional —
+# the runtime gracefully falls back to the legacy HSV detector if it is absent
+# or VIDEO_HIGHLIGHT_DETECTOR is left unset.
 COPY agents /app/agents
 
 ENV HOST=0.0.0.0
