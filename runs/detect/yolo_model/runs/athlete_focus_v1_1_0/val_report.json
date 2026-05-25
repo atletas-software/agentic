@@ -1,0 +1,9 @@
+{
+  "weights": "/workspace/agentic/runs/detect/yolo_model/runs/athlete_focus_v1_1_0/weights/best.pt",
+  "data": "/workspace/agentic/yolo_model/athlete-focus.v1-1.0.yolov8/data.yaml",
+  "imgsz": 640,
+  "mp": 0.9950474881516289,
+  "mr": 1.0,
+  "map50": 0.995,
+  "map": 0.8738999999999999
+}
