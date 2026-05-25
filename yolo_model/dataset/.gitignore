@@ -1,9 +1,0 @@
-# Large binaries — regenerate with scripts/import_dataset.py or prepare_dataset.py
-# sources/positives/*
-# sources/negatives/*
-!sources/positives/.gitkeep
-!sources/negatives/.gitkeep
-v1.0.0/images/
-v1.0.0/labels/
-raw/**/frame_*.jpg
-raw/**/frame_*.png
