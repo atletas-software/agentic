@@ -15,6 +15,11 @@ from app.db import SessionLocal
 from app.models.workspace import AgentJob
 from app.services.agent_job_cancel import agent_job_cancel_requested, clear_agent_job_cancel_requested
 from app.services.feedback_memory import retrieve_player_memory_context
+from app.services.feedback_public_url import (
+    feedback_public_review_url,
+    feedback_public_status_url,
+    feedback_public_watch_url,
+)
 from app.services.sheet_sync import SYNC_DESTINATION_HEADERS
 from app.services.shared_feedback_context_sheet import fetch_shared_feedback_context_text
 from app.services.player_directory import resolve_player_key_by_name
@@ -560,8 +565,18 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
 
         job.status = "SUCCESS"
         job.external_ref = review_id
+        review_url = feedback_public_review_url(review_id)
+        watch_url = feedback_public_watch_url(review_id)
+        status_url = feedback_public_status_url(review_id)
         job.result_json = json.dumps(
-            {"id": review_id, "create_response": data, "feedback_poll": "completed"},
+            {
+                "id": review_id,
+                "create_response": data,
+                "feedback_poll": "completed",
+                "review_url": review_url,
+                "watch_url": watch_url,
+                "status_url": status_url,
+            },
             ensure_ascii=True,
         )
         job.completed_at = datetime.now(UTC)

@@ -61,6 +61,9 @@ echo "  PID $!  log: /tmp/agentic-worker.log"
 sleep 1
 
 echo "Starting feedback agent on :5055..."
+if [[ -n "${FEEDBACK_PUBLIC_BASE_URL:-}" ]]; then
+  export PUBLIC_BASE_URL="${FEEDBACK_PUBLIC_BASE_URL}"
+fi
 nohup uvicorn agents.feedback.main:app --host 0.0.0.0 --port 5055 > /tmp/agentic-feedback.log 2>&1 &
 echo "  PID $!  log: /tmp/agentic-feedback.log"
 
@@ -72,4 +75,5 @@ curl -sf -o /dev/null http://127.0.0.1:5055/ && echo "  Feedback agent OK" || ec
 echo ""
 echo "YOLO_POSE_DEVICE=${YOLO_POSE_DEVICE:-not set}"
 echo "YOLO_HIGHLIGHT_WEIGHTS=${YOLO_HIGHLIGHT_WEIGHTS:-not set}"
+echo "FEEDBACK_PUBLIC_BASE_URL=${FEEDBACK_PUBLIC_BASE_URL:-not set}"
 echo "Logs: tail -f /tmp/agentic-api.log /tmp/agentic-worker.log /tmp/agentic-feedback.log"

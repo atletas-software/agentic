@@ -9,6 +9,7 @@ from app.api.routes.admin import router as admin_router
 from app.api.routes.admin_auth import router as admin_auth_router
 from app.api.routes.google_integrations import router as google_integrations_router
 from app.api.routes.agents import router as agents_router
+from app.api.routes.feedback_proxy import router as feedback_proxy_router
 from app.api.routes.sync import router as sync_router
 from app.api.routes.ui import router as ui_router
 from app.api.routes.workflow import router as workflow_router
@@ -100,6 +101,7 @@ async def on_shutdown() -> None:
     await sync_scheduler.stop()
 
 
+app.include_router(feedback_proxy_router)
 app.include_router(ui_router)
 app.include_router(auth_router)
 app.include_router(admin_auth_router)

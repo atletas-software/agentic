@@ -354,6 +354,7 @@
 
       <section class="card">
         <h3>Selected job details</h3>
+        <div id="jobLinks" class="small" style="margin-bottom: 0.5rem;"></div>
         <pre id="jobPayload">Select a job.</pre>
       </section>
     </div>
@@ -363,6 +364,7 @@
       const contextPayloadEl = document.getElementById("contextPayload");
       const jobsListEl = document.getElementById("jobsList");
       const jobPayloadEl = document.getElementById("jobPayload");
+      const jobLinksEl = document.getElementById("jobLinks");
       const workspaceStatusEl = document.getElementById("workspaceStatus");
       const createStatusEl = document.getElementById("createStatus");
       const autoPollBtn = document.getElementById("autoPollBtn");
@@ -711,6 +713,29 @@
         `).join("");
       }
 
+      function feedbackLinksForJob(job) {
+        const result = job?.result && typeof job.result === "object" ? job.result : null;
+        const origin = window.location.origin.replace(/\/$/, "");
+        const ref = job?.external_ref ? String(job.external_ref) : "";
+        let reviewUrl = result?.review_url || result?.create_response?.review_url || "";
+        let watchUrl = result?.watch_url || result?.create_response?.watch_url || "";
+        if ((!reviewUrl || reviewUrl.includes("feedback.athlete-focus.com")) && ref) {
+          reviewUrl = `${origin}/review/${ref}`;
+        }
+        if ((!watchUrl || watchUrl.includes("feedback.athlete-focus.com")) && ref) {
+          watchUrl = `${origin}/jobs/${ref}`;
+        }
+        if (!reviewUrl && !watchUrl) return "";
+        const parts = [];
+        if (reviewUrl) {
+          parts.push(`<a href="${escapeHtml(reviewUrl)}" target="_blank" rel="noopener">Open review</a>`);
+        }
+        if (watchUrl) {
+          parts.push(`<a href="${escapeHtml(watchUrl)}" target="_blank" rel="noopener">Job status</a>`);
+        }
+        return `<div class="item-meta" style="margin-top:4px;">${parts.join(" · ")}</div>`;
+      }
+
       function renderJobs(jobs) {
         if (!jobs?.length) {
           jobsListEl.innerHTML = `<div class="item small">No jobs yet.</div>`;
@@ -731,11 +756,13 @@
             ? escapeHtml(phRaw.slice(0, 160)) + (phRaw.length > 160 ? "…" : "")
             : "";
           const hintBlock = ph ? `<div class="item-meta" style="margin-top:4px;">${ph}</div>` : "";
+          const linkBlock =
+            job.status === "SUCCESS" && job.external_ref ? feedbackLinksForJob(job) : "";
           return `
           <div class="item ${selectedJobId === job.id ? "active" : ""}" data-job-id="${job.id}">
             <div class="item-row"><strong>${job.agent_type}</strong> ${statusPill(job.status)} ${stopBtn}</div>
             <div class="item-meta mono">job ${job.id}${job.external_ref ? " · " + escapeHtml(String(job.external_ref)) : ""}</div>
-            <div class="item-time">${job.created_at || "—"}${errBlock}</div>${hintBlock}
+            <div class="item-time">${job.created_at || "—"}${errBlock}</div>${hintBlock}${linkBlock}
           </div>`;
         }).join("");
       }
@@ -793,9 +820,13 @@
         selectedJobId = jobId;
         renderJobs(workspaceData?.agent_jobs || []);
         setText(jobPayloadEl, "Loading job...");
+        setText(jobLinksEl, "");
         try {
           const uid = requireWorkspaceUserId();
           const data = await api(`/admin-api/agents-lab/jobs/${jobId}?user_id=` + encodeURIComponent(uid));
+          if (data.status === "SUCCESS" && data.external_ref) {
+            jobLinksEl.innerHTML = feedbackLinksForJob(data);
+          }
           setText(jobPayloadEl, pretty(data));
         } catch (error) {
           setText(jobPayloadEl, `Failed: ${error.message}`);
