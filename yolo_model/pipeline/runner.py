@@ -98,7 +98,10 @@ def run_pose_pipeline(
     )
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-4000:]
-        raise RuntimeError(f"Pose pipeline failed (exit {proc.returncode}): {tail}")
+        hint = ""
+        if "_dlpack_exchange_api" in tail or "torch._C" in tail:
+            hint = " Reinstall PyTorch: bash scripts/install-torch.sh (from repo root, venv active)."
+        raise RuntimeError(f"Pose pipeline failed (exit {proc.returncode}): {tail}{hint}")
 
     if not output_json.is_file():
         raise RuntimeError(f"Pose JSON was not created: {output_json}")

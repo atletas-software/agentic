@@ -1,0 +1,59 @@
+# Unified dependencies: platform (app), feedback agent (agents), YOLO pose pipeline (yolo_model).
+#
+# Install order (important — avoids broken torch._C / dlpack errors):
+#   python3 -m venv venv && source venv/bin/activate
+#   bash scripts/install-torch.sh          # GPU or CPU wheels from pytorch.org
+#   pip install -r requirements.txt
+#
+# Docker (CPU): see agents/feedback/Dockerfile (installs torch before this file).
+
+# --- Web / API (app + agents) ---
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+httpx==0.28.1
+pydantic==2.11.4
+email-validator==2.2.0
+python-dotenv==1.0.1
+python-multipart==0.0.20
+jinja2==3.1.6
+
+# --- Platform DB, queue, auth ---
+sqlalchemy==2.0.40
+psycopg[binary]==3.2.9
+redis==5.0.8
+rq==1.16.2
+passlib[bcrypt]==1.7.4
+pgvector==0.3.6
+cryptography==42.0.8
+PyMySQL==1.1.1
+
+# --- Google Sheets / OAuth ---
+google-api-python-client==2.169.0
+google-auth==2.40.1
+google-auth-oauthlib==1.2.0
+
+# --- LLM + vector memory ---
+openai==1.76.0
+tiktoken==0.9.0
+pinecone==5.4.2
+
+# --- Vision / video (agents + yolo) ---
+Pillow==11.2.1
+opencv-python-headless==4.11.0.86
+ffmpeg-python
+pytesseract==0.3.13
+pyyaml>=6.0
+
+# --- Numerics (pin numpy<2 for ultralytics / OpenCV stacks) ---
+numpy<2
+pandas
+scikit-learn
+supervision
+tqdm
+
+# --- YOLO highlight + pose (torch/torchvision via scripts/install-torch.sh) ---
+ultralytics==8.3.27
+
+# --- Dev / tests ---
+pytest==8.3.5
+pytest-asyncio==0.26.0
