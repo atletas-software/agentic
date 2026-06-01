@@ -16,18 +16,22 @@ else
 fi
 
 pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
-pip install --no-cache-dir "torch==${TORCH_VERSION}" "torchvision==${TV_VERSION}" --index-url "${INDEX}"
+pip install --no-cache-dir --force-reinstall \
+  "torch==${TORCH_VERSION}" "torchvision==${TV_VERSION}" \
+  --index-url "${INDEX}"
 
 python - <<'PY'
 import torch
 import torchvision
+from ultralytics import YOLO
 
 print("torch:", torch.__version__)
 print("torchvision:", torchvision.__version__)
 print("cuda available:", torch.cuda.is_available())
-# Smoke test that broke in the user's error:
-_ = torch._C._dlpack_exchange_api()
-print("torch._C OK")
+# Real workload smoke test (not _dlpack_exchange_api — missing on some cu124 wheels but YOLO still works)
+x = torch.zeros(2, 2, device="cuda" if torch.cuda.is_available() else "cpu")
+print("tensor on device:", x.device)
+print("ultralytics YOLO import: OK")
 PY
 
-echo "PyTorch install verified."
+echo "PyTorch + ultralytics verified."

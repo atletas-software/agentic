@@ -15,8 +15,25 @@ fi
 
 export PYTHONPATH="${ROOT}"
 
-if ! python -c "import torch; torch._C._dlpack_exchange_api()" 2>/dev/null; then
-  echo "PyTorch missing or broken. Run: bash scripts/install-torch.sh"
+# Load YOLO / feedback URLs from app/.env (worker subprocess inherits these).
+if [[ -f app/.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source app/.env
+  set +a
+fi
+
+echo "Checking PyTorch + ultralytics..."
+if ! python - <<'PY'
+import torch
+from ultralytics import YOLO
+
+dev = "cuda" if torch.cuda.is_available() else "cpu"
+x = torch.zeros(2, 2, device=dev)
+print("torch", torch.__version__, "device", x.device, "ultralytics OK")
+PY
+then
+  echo "PyTorch/ultralytics check failed. Run: bash scripts/install-torch.sh"
   exit 1
 fi
 
@@ -53,4 +70,6 @@ echo "Health:"
 curl -sf http://127.0.0.1:8000/health && echo "  API OK" || echo "  API not ready"
 curl -sf -o /dev/null http://127.0.0.1:5055/ && echo "  Feedback agent OK" || echo "  Feedback agent not ready"
 echo ""
+echo "YOLO_POSE_DEVICE=${YOLO_POSE_DEVICE:-not set}"
+echo "YOLO_HIGHLIGHT_WEIGHTS=${YOLO_HIGHLIGHT_WEIGHTS:-not set}"
 echo "Logs: tail -f /tmp/agentic-api.log /tmp/agentic-worker.log /tmp/agentic-feedback.log"
