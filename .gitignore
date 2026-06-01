@@ -34,3 +34,5 @@ app.db
 # Docker overrides
 docker-compose.override.yml
 agents/feedback/data/
+runs/pose/
+/tmp/pose_pipeline/

@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 # the runtime gracefully falls back to the legacy HSV detector if it is absent
 # or VIDEO_HIGHLIGHT_DETECTOR is left unset.
 COPY agents /app/agents
+COPY yolo_model /app/yolo_model
 
 ENV HOST=0.0.0.0
 ENV PORT=5055

@@ -241,18 +241,31 @@ async def cancel_agent_job(
     return {"ok": True, "stopped": "running", "review_id": review_id or None}
 
 
-@router.post("/video/process-stub")
-async def enqueue_video_stub(
+class VideoProcessRequest(BaseModel):
+    video_url: str = Field(..., min_length=4, max_length=8000)
+    player_focus: str = ""
+    sport: str = "Soccer"
+    analysis_scope: str = ""
+    coaching_focus: str = ""
+    player_key: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    chain_feedback: bool = True
+
+
+@router.post("/video/process")
+async def enqueue_video_process(
+    body: VideoProcessRequest,
     user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Demo hook for a second agent type; completes as SUCCESS with stub result."""
+    """Download video, run YOLO pose JSON, optionally chain FEEDBACK_DELEGATE."""
     ws = ensure_workspace(user_id=user_id, db=db)
     job = AgentJob(
         workspace_id=ws.id,
         agent_type="VIDEO_PROCESSING",
         status="PENDING",
-        payload_json=json.dumps({"note": "stub"}, ensure_ascii=True),
+        payload_json=json.dumps(body.model_dump(), ensure_ascii=True),
         created_at=datetime.now(UTC),
     )
     db.add(job)

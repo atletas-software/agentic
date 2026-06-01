@@ -328,8 +328,8 @@
             <strong>shared sheet context</strong> (if configured) and <strong>vector player memory</strong> when a player key or first/last name resolves — together with video-derived context for feedback.
           </p>
           <div class="actions">
-            <button class="primary" id="createFeedbackBtn">Create video processing job</button>
-            <button id="createVideoStubBtn">Create video stub job</button>
+            <button class="primary" id="createFeedbackBtn">Create coaching job (YOLO pose + feedback)</button>
+            <button id="createVideoStubBtn" class="secondary">YOLO pose only (then chain feedback)</button>
             <button id="videoAnalysisBtn">Video analysis</button>
             <span id="createStatus" class="status">Idle</span>
           </div>
@@ -887,13 +887,29 @@
           setText(createStatusEl, e.message);
           return;
         }
-        setText(createStatusEl, "Creating video stub job...");
+        const payload = {
+          user_id: uid,
+          video_url: document.getElementById("videoUrl").value.trim(),
+          text_only: false,
+          player_focus: document.getElementById("playerFocus").value.trim(),
+          sport: document.getElementById("sport").value.trim() || "Soccer",
+          analysis_scope: document.getElementById("analysisScope").value.trim(),
+          coaching_focus: document.getElementById("coachingFocus").value.trim(),
+          player_key: document.getElementById("playerKey").value.trim(),
+          first_name: document.getElementById("playerFirstName").value.trim(),
+          last_name: document.getElementById("playerLastName").value.trim(),
+        };
+        if (!payload.video_url) {
+          setText(createStatusEl, "Video URL is required for YOLO pose processing.");
+          return;
+        }
+        setText(createStatusEl, "Creating YOLO pose job (chains feedback when done)...");
         try {
-          const result = await api("/admin-api/agents-lab/video-process-stub", {
+          const result = await api("/admin-api/agents-lab/video-process", {
             method: "POST",
-            body: JSON.stringify({ user_id: uid }),
+            body: JSON.stringify(payload),
           });
-          setText(createStatusEl, `Created stub job #${result.agent_job_id}`);
+          setText(createStatusEl, `Created VIDEO_PROCESSING job #${result.agent_job_id}`);
           await loadWorkspace();
           await loadJob(result.agent_job_id);
         } catch (error) {

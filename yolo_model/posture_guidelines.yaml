@@ -1,0 +1,71 @@
+schema_version: 1
+
+# Sample posture guidelines for the highlighted-player coaching pipeline.
+# `yolo_model/pose_feedback` and `python -m yolo_model.scripts.pose_feedback` read this file; computes
+# the listed metrics from the COCO-17 keypoints in the pose JSON, aggregates
+# them across each highlight event, and runs the rules below to emit
+# per-event coaching findings.
+#
+# All angles are in DEGREES.
+# All metrics are 2D image-plane derivations (no depth) - good enough for
+# coarse posture checks but not biomechanical analysis.
+
+metrics_glossary:
+  knee_flex_left:           "Angle at the LEFT knee (hip-knee-ankle). 180 = leg fully extended; 90 = right-angle bend."
+  knee_flex_right:          "Angle at the RIGHT knee. Same convention."
+  hip_flex_left:            "Angle at the LEFT hip (shoulder-hip-knee)."
+  hip_flex_right:           "Angle at the RIGHT hip."
+  elbow_flex_left:          "Angle at the LEFT elbow (shoulder-elbow-wrist)."
+  elbow_flex_right:         "Angle at the RIGHT elbow."
+  torso_tilt_from_vertical: "How far the torso (hip-mid -> shoulder-mid) tilts from vertical. 0 = upright, 90 = horizontal."
+  shoulder_tilt_deg:        "Angle of shoulder line vs horizontal. ~0 = level shoulders. Positive/negative indicates which shoulder is lower."
+
+rules:
+
+  - id: front_knee_bend
+    metric: knee_flex_left
+    aggregate: mean
+    target_min: 100
+    target_max: 160
+    ok: "Front knee bend looks athletic (between 100° and 160°). Good balance and readiness to react."
+    warn_below: "Front knee is very bent (under 100°). Risk of inefficient power transfer - aim for a 110-140° angle in a ready stance."
+    warn_above: "Front knee is too straight (over 160°). You're standing too tall - bend the knee more to stay explosive."
+
+  - id: back_knee_bend
+    metric: knee_flex_right
+    aggregate: mean
+    target_min: 100
+    target_max: 160
+    ok: "Back knee is bent in the ready range. Good stance for quick movement."
+    warn_below: "Back knee very bent. Extend slightly for a stable transition."
+    warn_above: "Back knee too straight. Bend more to load the hip and stay athletic."
+
+  - id: torso_upright
+    metric: torso_tilt_from_vertical
+    aggregate: mean
+    target_min: 0
+    target_max: 25
+    ok: "Torso is upright (tilt under 25°). Good for scanning the field and balanced shape."
+    warn_above: "Torso leaning significantly from vertical. Bring the chest up to keep balance and improve vision of the play."
+
+  - id: shoulders_level
+    metric: shoulder_tilt_deg
+    aggregate: mean
+    target_min: -12
+    target_max: 12
+    ok: "Shoulders are roughly level. Solid base for passing or finishing."
+    warn_below: "Right shoulder dipping. Square your shoulders toward the play."
+    warn_above: "Left shoulder dipping. Square your shoulders toward the play."
+
+  - id: knee_symmetry
+    metric: knee_flex_diff
+    aggregate: mean
+    target_min: 0
+    target_max: 30
+    ok: "Knee bend is roughly symmetric between legs."
+    warn_above: "Knees are bent unevenly (>30° difference). Could indicate weight distribution issues - check stance balance."
+
+# Coaching narrative defaults used when no OpenAI key is configured.
+narrative_defaults:
+  no_findings: "No clear posture issues detected for this highlight."
+  all_ok: "Posture looks solid across the highlight - keep this body shape."

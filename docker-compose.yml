@@ -64,6 +64,7 @@ services:
     volumes:
       # Code from host; RQ still loads Python at process start — run `docker compose restart worker` after worker code edits.
       - .:/app
+      - ./runs/pose:/app/runs/pose
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
       postgres:
@@ -103,6 +104,7 @@ services:
       - "5055:5055"
     volumes:
       - .:/app
+      - ./runs/pose:/app/runs/pose
       - feedback_agent_data:/app/data
     init: true
     restart: unless-stopped

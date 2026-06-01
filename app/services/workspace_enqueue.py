@@ -39,18 +39,22 @@ def enqueue_feedback_delegate_job(agent_job_id: int) -> str | None:
         return None
 
 
-def enqueue_video_processing_stub_job(agent_job_id: int) -> bool:
+def enqueue_video_processing_job(agent_job_id: int) -> bool:
     try:
         q = get_workspace_queue()
         q.enqueue(
-            "app.workers.workspace_worker.process_video_processing_stub_job",
+            "app.workers.workspace_worker.process_video_processing_job",
             agent_job_id,
-            job_timeout=120,
+            job_timeout=int(os.getenv("VIDEO_PROCESSING_RQ_JOB_TIMEOUT", "14400")),
+            retry=Retry(max=1, interval=[60]),
         )
         return True
     except Exception as exc:  # noqa: BLE001
-        info("video_stub_enqueue_failed", agent_job_id=agent_job_id, error=str(exc))
+        info("video_processing_enqueue_failed", agent_job_id=agent_job_id, error=str(exc))
         return False
+
+
+enqueue_video_processing_stub_job = enqueue_video_processing_job
 
 
 def enqueue_destination_snapshot_embed_job(workspace_id: int) -> bool:

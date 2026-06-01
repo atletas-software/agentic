@@ -996,20 +996,25 @@ async def agents_lab_create_feedback_review(
     return {"success": True, "agent_job_id": job.id}
 
 
-@router.post("/agents-lab/video-process-stub")
-async def agents_lab_video_stub(
-    body: AdminAgentsUserIdBody,
+@router.post("/agents-lab/video-process")
+async def agents_lab_video_process(
+    body: AdminAgentsFeedbackReviewBody,
     _admin: dict = Depends(get_admin_session_context),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    """YOLO pose only, then chain FEEDBACK_DELEGATE (same fields as feedback-reviews)."""
     uid = body.user_id.strip()
     _admin_require_user(db, uid)
+    if not (body.video_url or "").strip():
+        raise HTTPException(status_code=400, detail="video_url is required")
     ws = ensure_workspace(user_id=uid, db=db)
+    payload = body.model_dump()
+    payload["chain_feedback"] = True
     job = AgentJob(
         workspace_id=ws.id,
         agent_type="VIDEO_PROCESSING",
         status="PENDING",
-        payload_json=json.dumps({"note": "stub"}, ensure_ascii=True),
+        payload_json=json.dumps(payload, ensure_ascii=True),
         created_at=datetime.now(UTC),
     )
     db.add(job)
@@ -1023,3 +1028,16 @@ async def agents_lab_video_stub(
         db.commit()
         raise HTTPException(status_code=503, detail="Could not enqueue video job.")
     return {"success": True, "agent_job_id": job.id}
+
+
+@router.post("/agents-lab/video-process-stub")
+async def agents_lab_video_stub(
+    body: AdminAgentsUserIdBody,
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Deprecated: use ``/agents-lab/feedback-reviews`` (pose + coaching) or ``/video-process``."""
+    raise HTTPException(
+        status_code=410,
+        detail="Use POST /admin-api/agents-lab/feedback-reviews for the full pipeline.",
+    )

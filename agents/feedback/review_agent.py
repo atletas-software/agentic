@@ -669,6 +669,267 @@ def _try_circle_segment_episode_review(
     return review
 
 
+def _default_pose_kb_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "yolo_model" / "posture_guidelines.yaml"
+
+
+def _attach_pose_events_to_markers(
+    review: dict[str, Any],
+    pose_events: list[dict[str, Any]],
+) -> None:
+    """Add pose_event metadata to markers (same order as pose highlight events)."""
+    markers = review.get("markers") or []
+    if len(markers) != len(pose_events):
+        return
+    for marker, ev in zip(markers, pose_events):
+        marker["pose_marker"] = True
+        marker["pose_event"] = {
+            "event_index": ev.get("event_index"),
+            "start_frame": ev.get("start_frame"),
+            "end_frame": ev.get("end_frame"),
+            "start_timestamp_sec": ev.get("start_timestamp_sec"),
+            "end_timestamp_sec": ev.get("end_timestamp_sec"),
+            "frames_used": ev.get("frames_used"),
+            "summary_status": ev.get("summary_status"),
+            "metrics": ev.get("metrics"),
+            "findings": ev.get("findings"),
+            "highlight_bbox": ev.get("highlight_bbox"),
+            "pose_quality": ev.get("pose_quality"),
+            "pose_visibility_mean": ev.get("pose_visibility_mean"),
+            "track_ids": ev.get("track_ids"),
+        }
+
+
+def build_review_from_pose_json(
+    *,
+    review_id: str,
+    video_url: str,
+    pose_data: dict[str, Any],
+    sport: str,
+    player_focus: str,
+    analysis_scope: str = "",
+    coaching_focus: str = "",
+    kb_path: Path | None = None,
+    player_memory_context: str | None = None,
+    shared_context: str | None = None,
+    player_memory_retrieval_debug: dict[str, Any] | None = None,
+    shared_context_sheet_debug: dict[str, Any] | None = None,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> dict[str, Any]:
+    """Pose JSON (YOLO highlight + body keypoints) → review via circle-segment vision agent."""
+    from yolo_model.pose_feedback.engine import (
+        format_pose_context_for_agent,
+        generate_feedback_payload,
+        load_posture_kb,
+    )
+
+    kb_file = kb_path or _default_pose_kb_path()
+    if not kb_file.is_file():
+        raise FileNotFoundError(f"Posture KB not found: {kb_file}")
+
+    kb = load_posture_kb(kb_file)
+    feedback = generate_feedback_payload(pose_data, kb, kb_path=str(kb_file))
+    events = feedback.get("events") or []
+    if not events:
+        raise RuntimeError("No highlight events in pose JSON (no detected red-circle frames).")
+
+    if pose_data.get("fps") and pose_data.get("total_frames"):
+        duration_sec = float(pose_data["total_frames"]) / float(pose_data["fps"])
+    else:
+        duration_sec = probe_duration(video_url)
+
+    base_dir = DATA_DIR / "reviews" / review_id
+    storyboards_dir = base_dir / "storyboards"
+    pad = float((os.getenv("VIDEO_CIRCLE_CONTEXT_PAD_SEC") or "2").strip() or "2")
+    per_seg_frames = int((os.getenv("VIDEO_CIRCLE_SEGMENT_FRAMES") or "12").strip() or "12")
+    seg_fw = int((os.getenv("VIDEO_CIRCLE_SEGMENT_FRAME_WIDTH") or "720").strip() or "720")
+
+    vision_debug: list[dict[str, Any]] = []
+    episode_blocks: list[str] = []
+    moments: list[ReviewMoment] = []
+    all_window_assets: list[FrameAsset] = []
+    used_ts: set[float] = set()
+    total = len(events)
+
+    for ev in events:
+        _raise_if_cancelled(cancel_check)
+        idx = int(ev["event_index"])
+        t_on = float(ev["start_timestamp_sec"])
+        t_off = float(ev["end_timestamp_sec"])
+        anchor = float(ev.get("anchor_timestamp_sec") or (t_on + t_off) / 2.0)
+
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "pose_episode_vision",
+                    "segment_total": total,
+                    "segment_current": idx,
+                    "progress_detail": (
+                        f"Pose highlight {idx}/{total}: extracting frames and calling vision agent…"
+                    ),
+                }
+            )
+
+        t_lo = max(0.0, t_on - pad)
+        t_hi = min(float(duration_sec), t_off + pad)
+        seg_dir = base_dir / "pose_segment_frames" / f"seg_{idx:02d}"
+        assets = extract_uniform_frames_in_range(
+            video_url,
+            t_lo,
+            t_hi,
+            seg_dir,
+            f"p{idx:02d}",
+            max_frames=max(4, per_seg_frames),
+            frame_width=seg_fw,
+            video_duration_sec=duration_sec,
+        )
+        all_window_assets.extend(assets)
+        paths = [a.image_path for a in assets]
+
+        vis_out, vdbg = vision_analyze_circle_segment(
+            frame_paths=paths,
+            t_lo=t_lo,
+            t_on=t_on,
+            t_off=t_off,
+            t_hi=t_hi,
+            sport=sport,
+            player_focus=player_focus,
+            segment_index=idx,
+            segment_total=total,
+            pose_context=format_pose_context_for_agent(ev),
+        )
+        vdbg["pose_summary_status"] = ev.get("summary_status")
+        vdbg["pose_frames_used"] = ev.get("frames_used")
+        vision_debug.append(vdbg)
+
+        episode_blocks.append(
+            "\n".join(
+                [
+                    f"### Episode {idx}/{total}  anchor≈{anchor:.2f}s  "
+                    f"circle≈{t_on:.2f}s–{t_off:.2f}s  (pose snapshots={ev.get('frames_used')})",
+                    f"- category: {vis_out.category}",
+                    f"- sentiment: {vis_out.sentiment}",
+                    f"- coaching: {vis_out.coaching_note}",
+                ]
+            )
+        )
+
+        ts = round(anchor, 2)
+        while ts in used_ts:
+            ts = round(ts + 0.05, 2)
+        used_ts.add(ts)
+        moments.append(
+            ReviewMoment(
+                timestamp_sec=ts,
+                category=vis_out.category,
+                sentiment=vis_out.sentiment,
+                coaching_note=vis_out.coaching_note,
+            )
+        )
+
+    moments.sort(key=lambda m: m.timestamp_sec)
+    segments_markdown = "\n\n".join(episode_blocks)
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "pose_overall_synthesis",
+                "segment_total": total,
+                "segment_current": total,
+                "progress_detail": "Synthesizing overall assessment from pose-highlight episodes…",
+            }
+        )
+
+    merged_assets = _merge_frame_assets_by_path(all_window_assets)
+    max_sb_frames = int((os.getenv("VIDEO_CIRCLE_OVERALL_MAX_FRAMES_FOR_STORYBOARD") or "48").strip() or "48")
+    storyboard_source = _subsample_frame_assets(merged_assets, max_sb_frames)
+    storyboards = create_storyboards(storyboard_source, storyboards_dir)
+
+    _raise_if_cancelled(cancel_check)
+    prompt_text = (BASE_DIR / "video_feedback_agent_system_prompt.md").read_text(encoding="utf-8")
+    overall, overall_dbg = synthesize_overall_from_circle_segments(
+        prompt_tone=prompt_text,
+        sport=sport,
+        player_focus=player_focus,
+        duration_sec=duration_sec,
+        analysis_scope=analysis_scope,
+        coaching_focus=coaching_focus,
+        segments_markdown=segments_markdown,
+        storyboard_paths=storyboards,
+        player_memory_context=player_memory_context,
+        shared_context=shared_context,
+    )
+
+    review_payload = VideoFeedbackReview(
+        video_summary=VideoSummary(
+            sport=sport,
+            player_focus=player_focus,
+            duration_sec=duration_sec,
+            analysis_scope=analysis_scope,
+        ),
+        overall_assessment=overall,
+        moments=moments,
+    )
+    allowed_timestamps = [round(float(m.timestamp_sec), 2) for m in moments]
+
+    segment_meta = [
+        {
+            "index": ev["event_index"],
+            "t_on": ev["start_timestamp_sec"],
+            "t_off": ev["end_timestamp_sec"],
+            "anchor_sec": ev.get("anchor_timestamp_sec"),
+            "pose_frames_used": ev.get("frames_used"),
+            "pose_summary_status": ev.get("summary_status"),
+        }
+        for ev in events
+    ]
+
+    llm_debug: dict[str, Any] = {
+        "analysis_kind": "pose-json-episodes",
+        "pose_segment_vision": vision_debug,
+        "pose_segment_overall": overall_dbg,
+        "pose_feedback": feedback,
+    }
+
+    review = _to_review_document(
+        review_id=review_id,
+        video_url=video_url,
+        duration_sec=duration_sec,
+        review_payload=review_payload,
+        analysis_mode="pose-json-episodes",
+        allowed_timestamps=allowed_timestamps,
+    )
+    review["pose_segments"] = segment_meta
+    _attach_pose_events_to_markers(review, events)
+
+    video_pre: dict[str, Any] = {
+        "pose_highlight_episodes": len(events),
+        "frames_in_episode_windows": len(merged_assets),
+        "frames_sent_to_storyboard": len(storyboard_source),
+        "storyboard_pages": len(storyboards),
+        "pose_kb": str(kb_file),
+    }
+
+    review["generation_debug"] = {
+        "analysis_kind": "pose-json-episodes",
+        "openai": llm_debug,
+        "shared_context_sheet": shared_context_sheet_debug,
+        "player_memory_vector_retrieval": player_memory_retrieval_debug,
+        "video_preprocess": video_pre,
+    }
+    review["video_context"] = {
+        "description": (
+            "YOLO pose JSON: one marker per red-circle span; per-episode vision agent "
+            "(circle-segment flow) with body-pose metrics/findings as supporting context."
+        ),
+        "combined_highlight_text": segments_markdown[:60_000],
+        "preprocess": video_pre,
+    }
+    save_json(base_dir / "review.json", review)
+    return review
+
+
 def build_review(
     *,
     review_id: str,

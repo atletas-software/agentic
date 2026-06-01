@@ -1,12 +1,20 @@
+# Core CV / video
 opencv-python
-ultralytics
 ffmpeg-python
-numpy
-pandas
-tqdm
 Pillow
-mediapipe
-scikit-learn
+
+numpy<2
+pandas
+
+# Detection + pose (detect_pose_video_yolov8.py; weights auto-download on first use)
+ultralytics
+
+# Training / utilities
 torch
 torchvision
+scikit-learn
 supervision
+tqdm
+
+# Pose feedback KB + optional OpenAI polish (yolo_model/pose_feedback, agents integration)
+pyyaml

@@ -220,6 +220,7 @@ def vision_analyze_circle_segment(
     player_focus: str,
     segment_index: int,
     segment_total: int,
+    pose_context: str | None = None,
 ) -> tuple[CircleSegmentVisionOutput, dict[str, Any]]:
     """Single vision parse for one episode: stills cover pre-circle, visible span, and post-circle."""
     debug: dict[str, Any] = {
@@ -258,6 +259,16 @@ def vision_analyze_circle_segment(
         "3) Write coaching_note as 2–5 tight sentences: what to keep doing, what to adjust, and the next read — grounded only in what the stills support.",
         "If the target player is unclear, stay conservative and avoid invented actions.",
     ]
+    pose_block = (pose_context or "").strip()
+    if pose_block:
+        user_lines.extend(
+            [
+                "",
+                "YOLOv8 body-pose analysis for this highlight (shoulders through ankles only; use as supporting signal):",
+                pose_block,
+                "Blend visible action in the frames with posture findings; do not quote raw angle lists in coaching_note.",
+            ]
+        )
     user_text = "\n".join(user_lines)
     content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
     for path in frame_paths:

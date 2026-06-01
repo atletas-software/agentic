@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from agents.feedback.openai_service import analyze_manual_moment, generate_text_coaching_review
-from agents.feedback.review_agent import build_review
+from agents.feedback.review_agent import build_review, build_review_from_pose_json
 from agents.feedback.storage import DATA_DIR, ensure_directories, load_json, review_cancel_requested, save_json
 from agents.feedback.video_utils import (
     crop_reference_patch,
@@ -251,6 +251,67 @@ def _run_text_coaching_job(review_id: str, payload: Dict[str, Any]) -> None:
     _save_job(review_id, job)
 
 
+def _run_pose_review_job(review_id: str, payload: Dict[str, Any]) -> None:
+    """YOLO pose JSON → one marker per red-circle highlight (vision + Pinecone context)."""
+    _save_job(
+        review_id,
+        {
+            "id": review_id,
+            "status": "running",
+            "video_url": payload.get("video_url", ""),
+            "player_focus": payload.get("player_focus", ""),
+            "sport": payload.get("sport", "Soccer"),
+            "mode": "pose-pipeline",
+            "error": None,
+        },
+    )
+    try:
+        pose_json_path = (payload.get("pose_json_path") or "").strip()
+        video_url = (payload.get("video_url") or "").strip()
+        if not pose_json_path:
+            if not video_url:
+                raise ValueError("pose_json_path or video_url is required for pose pipeline review")
+            from yolo_model.pipeline.runner import run_pose_pipeline
+
+            pose_json_path = str(
+                run_pose_pipeline(video_url, job_key=f"review_{review_id}")
+            )
+        from yolo_model.pose_feedback.engine import load_pose_json
+
+        pose_data = load_pose_json(Path(pose_json_path))
+        review = build_review_from_pose_json(
+            review_id=review_id,
+            video_url=video_url or str(pose_data.get("video") or ""),
+            pose_data=pose_data,
+            sport=payload.get("sport", "Soccer"),
+            player_focus=payload.get("player_focus", "Unknown player"),
+            analysis_scope=payload.get("analysis_scope", ""),
+            coaching_focus=payload.get("coaching_focus", ""),
+            player_memory_context=(payload.get("player_memory_context") or "").strip() or None,
+            shared_context=(payload.get("shared_context") or "").strip() or None,
+            player_memory_retrieval_debug=payload.get("player_memory_retrieval_debug"),
+            shared_context_sheet_debug=payload.get("shared_context_sheet_debug"),
+            on_progress=lambda p: _merge_job_progress(review_id, p),
+            cancel_check=lambda: review_cancel_requested(review_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        job = _load_job(review_id) or {"id": review_id}
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        _save_job(review_id, job)
+        return
+
+    review_url = _public_review_url(review_id)
+    job = _load_job(review_id) or {"id": review_id}
+    job["status"] = "completed"
+    job["error"] = None
+    job["review_url"] = review_url
+    job["review_title"] = review["title"]
+    for k in ("phase", "progress_detail", "probe_current", "probe_estimate", "segment_current", "segment_total"):
+        job.pop(k, None)
+    _save_job(review_id, job)
+
+
 def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
     _save_job(
         review_id,
@@ -371,8 +432,16 @@ async def create_review(request: Request) -> JSONResponse:
         "last_name": (payload.get("last_name") or "").strip(),
         "player_memory_retrieval_debug": payload.get("player_memory_retrieval_debug"),
         "shared_context_sheet_debug": payload.get("shared_context_sheet_debug"),
+        "pose_json_path": (payload.get("pose_json_path") or "").strip(),
+        "use_pose_pipeline": bool(payload.get("use_pose_pipeline")),
+        "use_legacy_review": bool(payload.get("use_legacy_review")),
     }
-    runner = _run_text_coaching_job if text_only else _run_review_job
+    if text_only:
+        runner = _run_text_coaching_job
+    elif job_payload["pose_json_path"] or job_payload["use_pose_pipeline"]:
+        runner = _run_pose_review_job
+    else:
+        runner = _run_review_job
     thread = threading.Thread(
         target=runner,
         args=(review_id, job_payload),
@@ -502,6 +571,35 @@ async def clear_review_markers(review_id: str) -> JSONResponse:
     if focus_dir.exists():
         shutil.rmtree(focus_dir)
     return JSONResponse({"ok": True, "markers": []})
+
+
+@app.post("/api/pose-markers", name="create_pose_markers")
+async def create_pose_markers(request: Request) -> JSONResponse:
+    """Alias for ``POST /api/reviews`` with pose pipeline (async job + poll status)."""
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    payload["use_pose_pipeline"] = True
+    payload.setdefault("text_only", False)
+    review_id = uuid.uuid4().hex[:12]
+    (REVIEWS_DIR / review_id).mkdir(parents=True, exist_ok=True)
+    thread = threading.Thread(
+        target=_run_pose_review_job,
+        args=(review_id, payload),
+        daemon=True,
+    )
+    thread.start()
+    status_url = _public_url_for(request, "job_status", review_id=review_id)
+    watch_url = _public_url_for(request, "job_page", review_id=review_id)
+    return JSONResponse(
+        {
+            "id": review_id,
+            "status": "queued",
+            "status_url": status_url,
+            "watch_url": watch_url,
+        }
+    )
 
 
 @app.post("/api/reviews/{review_id}/manual-feedback")

@@ -18,8 +18,10 @@ from app.services.feedback_memory import retrieve_player_memory_context
 from app.services.sheet_sync import SYNC_DESTINATION_HEADERS
 from app.services.shared_feedback_context_sheet import fetch_shared_feedback_context_text
 from app.services.player_directory import resolve_player_key_by_name
+from app.services.pose_video_pipeline import pose_pipeline_enabled, run_pose_pipeline_for_job
 from app.services.workspace_enqueue import (
     enqueue_destination_snapshot_embed_job,
+    enqueue_feedback_delegate_job,
     enqueue_feedback_review_embed_job,
 )
 from app.services.workspace_service import (
@@ -197,8 +199,84 @@ def process_workspace_context_job(user_id: str) -> dict[str, str | bool]:
         db.close()
 
 
-def process_video_processing_stub_job(agent_job_id: int) -> dict[str, str]:
-    """Placeholder for future video pipeline (transcripts, embeddings)."""
+def _build_feedback_delegate_body(
+    db,
+    job: AgentJob,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], bool, str]:
+    """Shared context for FEEDBACK_DELEGATE → feedback agent (pose or legacy)."""
+    scope_raw = (payload.get("analysis_scope") or "").strip()
+    scope = _strip_sync_destination_kv_lines_from_scope(scope_raw)
+    text_only = bool(payload.get("text_only"))
+    video_url = (payload.get("video_url") or "").strip()
+
+    body: dict[str, Any] = {
+        "text_only": text_only,
+        "video_url": video_url,
+        "player_focus": (payload.get("player_focus") or "").strip(),
+        "sport": (payload.get("sport") or "Soccer").strip(),
+        "analysis_scope": scope,
+        "coaching_focus": (payload.get("coaching_focus") or "").strip(),
+        "first_name": str(payload.get("first_name") or "").strip(),
+        "last_name": str(payload.get("last_name") or "").strip(),
+    }
+
+    shared, shared_sheet_debug = fetch_shared_feedback_context_text(
+        max_chars=int(os.getenv("FEEDBACK_SHARED_CONTEXT_MAX_CHARS", "14000")),
+    )
+    if shared:
+        body["shared_context"] = shared
+    body["shared_context_sheet_debug"] = shared_sheet_debug
+
+    pk = (payload.get("player_key") or "").strip()
+    if not pk:
+        first_name = str(payload.get("first_name") or "").strip()
+        last_name = str(payload.get("last_name") or "").strip()
+        if first_name or last_name:
+            resolved = resolve_player_key_by_name(
+                db=db,
+                workspace_id=job.workspace_id,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            if resolved:
+                pk = resolved
+
+    mem_debug: dict[str, Any] = {"outcome": "skipped_no_player_key"}
+    if pk:
+        mem, mem_debug = retrieve_player_memory_context(
+            db=db,
+            workspace_id=job.workspace_id,
+            player_key=pk,
+            payload=payload,
+        )
+        if mem:
+            body["player_memory_context"] = mem
+    body["player_memory_retrieval_debug"] = mem_debug
+
+    pose_path = (payload.get("pose_json_path") or "").strip()
+    use_pose = bool(pose_path) or (
+        pose_pipeline_enabled()
+        and not text_only
+        and bool(video_url)
+        and not bool(payload.get("use_legacy_review"))
+    )
+    if use_pose:
+        body["use_pose_pipeline"] = True
+        if pose_path:
+            body["pose_json_path"] = pose_path
+
+    meta = {
+        "shared_context_attached": bool(shared),
+        "player_memory_attached": bool(body.get("player_memory_context")),
+        "use_pose_pipeline": use_pose,
+        "pose_json_path": pose_path or None,
+    }
+    return body, meta, text_only, video_url
+
+
+def process_video_processing_job(agent_job_id: int) -> dict[str, Any]:
+    """Download video, run YOLO highlight+pose, optionally chain FEEDBACK_DELEGATE."""
     db = SessionLocal()
     try:
         job = db.get(AgentJob, agent_job_id)
@@ -207,21 +285,84 @@ def process_video_processing_stub_job(agent_job_id: int) -> dict[str, str]:
         job.status = "RUNNING"
         job.started_at = datetime.now(UTC)
         db.commit()
-        result = {
-            "note": "VIDEO_PROCESSING is a stub. Implement ffmpeg/OpenAI pipeline or delegate to a service.",
+
+        payload = json.loads(job.payload_json or "{}")
+        video_url = (payload.get("video_url") or "").strip()
+        if not video_url:
+            job.status = "FAILED"
+            job.error_message = "video_url missing in VIDEO_PROCESSING payload"
+            job.completed_at = datetime.now(UTC)
+            db.commit()
+            return {"ok": False, "error": "video_url_required"}
+
+        info("video_processing_start", agent_job_id=agent_job_id, video_url=video_url[:120])
+        pose_json_path = run_pose_pipeline_for_job(video_url, agent_job_id=agent_job_id)
+
+        result: dict[str, Any] = {
+            "pose_json_path": pose_json_path,
+            "video_url": video_url,
             "workspace_id": job.workspace_id,
         }
+        try:
+            from pathlib import Path
+
+            summary = json.loads(Path(pose_json_path).read_text(encoding="utf-8"))
+            result["frames_detected"] = sum(
+                1 for f in summary.get("pose_results", []) if f.get("detected")
+            )
+            result["event_count_hint"] = "see pose_feedback after delegate"
+        except Exception:  # noqa: BLE001
+            pass
+
+        chain_raw = payload.get("chain_feedback", True)
+        chain = chain_raw if isinstance(chain_raw, bool) else str(chain_raw).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if chain:
+            delegate_payload = {**payload, "pose_json_path": pose_json_path}
+            delegate = AgentJob(
+                workspace_id=job.workspace_id,
+                agent_type="FEEDBACK_DELEGATE",
+                status="PENDING",
+                payload_json=json.dumps(delegate_payload, ensure_ascii=True),
+                created_at=datetime.now(UTC),
+            )
+            db.add(delegate)
+            db.commit()
+            db.refresh(delegate)
+            rq_rid = enqueue_feedback_delegate_job(delegate.id)
+            result["feedback_delegate_job_id"] = delegate.id
+            result["feedback_delegate_rq_id"] = rq_rid
+            if not rq_rid:
+                result["feedback_delegate_enqueue_error"] = "enqueue_failed"
+
         job.status = "SUCCESS"
-        job.result_json = json.dumps(result)
+        job.result_json = json.dumps(result, ensure_ascii=True)
         job.completed_at = datetime.now(UTC)
         db.commit()
-        info("video_processing_stub_complete", agent_job_id=agent_job_id)
-        return {"ok": True}
+        info("video_processing_complete", agent_job_id=agent_job_id, pose_json_path=pose_json_path)
+        return {"ok": True, "pose_json_path": pose_json_path}
     except Exception as exc:  # noqa: BLE001
-        error("video_processing_stub_failed", agent_job_id=agent_job_id, error=str(exc))
+        error("video_processing_failed", agent_job_id=agent_job_id, error=str(exc))
+        try:
+            job = db.get(AgentJob, agent_job_id)
+            if job is not None:
+                job.status = "FAILED"
+                job.error_message = str(exc)
+                job.completed_at = datetime.now(UTC)
+                db.commit()
+        except Exception:  # noqa: BLE001
+            pass
         raise
     finally:
         db.close()
+
+
+# Backward-compatible RQ entrypoint name
+process_video_processing_stub_job = process_video_processing_job
 
 
 def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
@@ -258,11 +399,8 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             return {"ok": True, "delegated": False}
 
         payload = json.loads(job.payload_json or "{}")
-        scope_raw = (payload.get("analysis_scope") or "").strip()
-        scope = _strip_sync_destination_kv_lines_from_scope(scope_raw)
-        payload["analysis_scope"] = scope
-        text_only = bool(payload.get("text_only"))
-        video_url = (payload.get("video_url") or "").strip()
+        body, ctx_meta, text_only, video_url = _build_feedback_delegate_body(db, job, payload)
+
         if not text_only and not video_url:
             job.status = "FAILED"
             job.error_message = "video_url missing in job payload (set text_only=true for link-only / sheet coaching)"
@@ -275,6 +413,8 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             should_force, matched_host = _is_page_url_requiring_text_only(video_url)
             if should_force:
                 text_only = True
+                body["text_only"] = True
+                body.pop("use_pose_pipeline", None)
                 auto_text_only_host = matched_host
                 info(
                     "feedback_delegate_auto_text_only",
@@ -298,47 +438,21 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
                 job.result_json = json.dumps(existing, ensure_ascii=True)
                 db.commit()
 
-        body: dict[str, Any] = {
-            "text_only": text_only,
-            "video_url": video_url,
-            "player_focus": (payload.get("player_focus") or "").strip(),
-            "sport": (payload.get("sport") or "Soccer").strip(),
-            "analysis_scope": scope,
-            "coaching_focus": (payload.get("coaching_focus") or "").strip(),
-            "first_name": str(payload.get("first_name") or "").strip(),
-            "last_name": str(payload.get("last_name") or "").strip(),
-        }
-        shared, shared_sheet_debug = fetch_shared_feedback_context_text(
-            max_chars=int(os.getenv("FEEDBACK_SHARED_CONTEXT_MAX_CHARS", "14000")),
-        )
-        if shared:
-            body["shared_context"] = shared
-        body["shared_context_sheet_debug"] = shared_sheet_debug
-
-        pk = (payload.get("player_key") or "").strip()
-        if not pk:
-            first_name = str(payload.get("first_name") or "").strip()
-            last_name = str(payload.get("last_name") or "").strip()
-            if first_name or last_name:
-                resolved = resolve_player_key_by_name(
-                    db=db,
-                    workspace_id=job.workspace_id,
-                    first_name=first_name,
-                    last_name=last_name,
-                )
-                if resolved:
-                    pk = resolved
-        mem_debug: dict[str, Any] = {"outcome": "skipped_no_player_key"}
-        if pk:
-            mem, mem_debug = retrieve_player_memory_context(
-                db=db,
-                workspace_id=job.workspace_id,
-                player_key=pk,
-                payload=payload,
-            )
-            if mem:
-                body["player_memory_context"] = mem
-        body["player_memory_retrieval_debug"] = mem_debug
+        if body.get("use_pose_pipeline") and not body.get("pose_json_path") and video_url:
+            info("feedback_delegate_pose_pipeline", agent_job_id=agent_job_id)
+            pose_json_path = run_pose_pipeline_for_job(video_url, agent_job_id=agent_job_id)
+            body["pose_json_path"] = pose_json_path
+            ctx_meta["pose_json_path"] = pose_json_path
+            try:
+                prev = json.loads(job.result_json or "{}")
+            except json.JSONDecodeError:
+                prev = {}
+            prev["pose_pipeline"] = {
+                "pose_json_path": pose_json_path,
+                "completed_at": datetime.now(UTC).isoformat(),
+            }
+            job.result_json = json.dumps(prev, ensure_ascii=True)
+            db.commit()
 
         if agent_job_cancel_requested(agent_job_id):
             job.status = "FAILED"
@@ -353,11 +467,7 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             agent_job_id=agent_job_id,
             text_only=text_only,
             auto_text_only_host=auto_text_only_host,
-            shared_context_attached=bool(shared),
-            shared_context_chars=len(shared or ""),
-            shared_context_sheet_outcome=str((shared_sheet_debug or {}).get("outcome") or ""),
-            player_memory_attached=bool(body.get("player_memory_context")),
-            player_memory_chars=len(str(body.get("player_memory_context") or "")),
+            **ctx_meta,
         )
 
         url = f"{base}/api/reviews"
