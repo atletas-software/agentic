@@ -5,7 +5,7 @@
 #   bash scripts/install-torch.sh          # GPU or CPU wheels from pytorch.org
 #   pip install -r requirements.txt
 #
-# Docker (CPU): see agents/feedback/Dockerfile (installs torch before this file).
+# Docker (CPU): see app/agents/feedback/Dockerfile (installs torch before this file).
 
 # --- Web / API (app + agents) ---
 fastapi==0.115.12
@@ -21,9 +21,9 @@ jinja2==3.1.6
 sqlalchemy==2.0.40
 psycopg[binary]==3.2.9
 redis==5.0.8
+async-timeout>=4.0.3
 rq==1.16.2
 passlib[bcrypt]==1.7.4
-pgvector==0.3.6
 cryptography==42.0.8
 PyMySQL==1.1.1
 
@@ -32,10 +32,10 @@ google-api-python-client==2.169.0
 google-auth==2.40.1
 google-auth-oauthlib==1.2.0
 
-# --- LLM + vector memory ---
+# --- LLM + vector memory (GCP Firestore native vector search) ---
 openai==1.76.0
 tiktoken==0.9.0
-pinecone==5.4.2
+google-cloud-firestore==2.20.1
 
 # --- Vision / video (agents + yolo) ---
 Pillow==11.2.1

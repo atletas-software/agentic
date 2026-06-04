@@ -89,16 +89,16 @@ jobs:
           ls -la env-backup credential-json
 
           echo "🧹 Remove old credentials/env"
-          rm -f credentials.json app/.env
+          rm -f credentials.json app/backendapi/.env
 
           echo "📦 Rename credential-json → credentials.json"
           mv credential-json credentials.json
 
           echo "📦 Apply env"
           mkdir -p app
-          mv env-backup app/.env
+          mv env-backup app/backendapi/.env
 
-          chmod 600 app/.env credentials.json
+          chmod 600 app/backendapi/.env credentials.json
 
           echo "🐳 Restart Docker"
           docker compose up -d --build --remove-orphans

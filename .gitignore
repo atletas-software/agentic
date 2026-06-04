@@ -33,6 +33,10 @@ app.db
 
 # Docker overrides
 docker-compose.override.yml
-agents/feedback/data/
-runs/pose/
+# Ultralytics may still write here if --project is relative; prefer app/yolo_model/artifacts/
+/runs/
+
+app/yolo_model/artifacts/*
+!app/yolo_model/artifacts/README.md
+app/agents/feedback/data/
 /tmp/pose_pipeline/

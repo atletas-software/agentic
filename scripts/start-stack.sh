@@ -13,14 +13,39 @@ elif [[ -f .venv/bin/activate ]]; then
   source .venv/bin/activate
 fi
 
-export PYTHONPATH="${ROOT}"
-
-# Load YOLO / feedback URLs from app/.env (worker subprocess inherits these).
-if [[ -f app/.env ]]; then
+# Load platform + agent secrets (OPENAI_API_KEY, YOLO_*, feedback URLs).
+if [[ -f app/backendapi/.env ]]; then
   set -a
   # shellcheck disable=SC1091
-  source app/.env
+  source app/backendapi/.env
   set +a
+fi
+if [[ -f app/agents/.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source app/agents/.env
+  set +a
+fi
+
+export PYTHONPATH="${ROOT}/app"
+export FEEDBACK_AGENT_BASE_URL="${FEEDBACK_AGENT_BASE_URL:-http://127.0.0.1:5055}"
+export FEEDBACK_USE_POSE_PIPELINE="${FEEDBACK_USE_POSE_PIPELINE:-true}"
+if [[ -n "${FEEDBACK_PUBLIC_BASE_URL:-}" ]]; then
+  export PUBLIC_BASE_URL="${FEEDBACK_PUBLIC_BASE_URL}"
+fi
+if [[ -z "${YOLO_POSE_DEVICE:-}" ]]; then
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    export YOLO_POSE_DEVICE=cuda
+  else
+    export YOLO_POSE_DEVICE=cpu
+  fi
+fi
+
+echo "Checking ffmpeg..."
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "WARNING: ffmpeg not found — video coaching will fail. Run: bash scripts/run.sh (installs on Linux as root) or apt-get install ffmpeg"
+else
+  ffmpeg -version | head -1
 fi
 
 echo "Checking PyTorch + ultralytics..."
@@ -49,13 +74,13 @@ else
 fi
 
 echo "Starting API on :8000..."
-nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/agentic-api.log 2>&1 &
+nohup uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 > /tmp/agentic-api.log 2>&1 &
 echo "  PID $!  log: /tmp/agentic-api.log"
 
 sleep 1
 
 echo "Starting RQ worker..."
-nohup python -m app.workers.run_worker > /tmp/agentic-worker.log 2>&1 &
+nohup python -m backendapi.workers.run_worker > /tmp/agentic-worker.log 2>&1 &
 echo "  PID $!  log: /tmp/agentic-worker.log"
 
 sleep 1

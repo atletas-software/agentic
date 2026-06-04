@@ -1,19 +1,21 @@
 # Compose reads repo-root `.env` for ${POSTGRES_PASSWORD} etc.
-# API/worker load `app/.env` inside containers; runtime URLs below override hostnames for in-cluster networking.
+# API/worker load `app/backendapi/.env` inside containers; runtime URLs below override hostnames for in-cluster networking.
 services:
   api:
     build:
       context: .
-      dockerfile: app/Dockerfile
+      dockerfile: app/backendapi/Dockerfile
     container_name: sheet-mcp-api
     env_file:
-      - app/.env
+      - app/backendapi/.env
     environment:
+      PYTHONPATH: /app/app
       # Force container-network defaults unless explicitly overridden.
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
       FEEDBACK_AGENT_BASE_URL: ${FEEDBACK_AGENT_BASE_URL_DOCKER:-http://feedback-agent:5055}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
       # Set DEV_HOT_RELOAD=0 in root .env for production (multi-worker, no auto-reload).
       DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
@@ -23,9 +25,9 @@ services:
       - |
           set -e
           if [ "$${DEV_HOT_RELOAD:-0}" = "1" ]; then
-            exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --reload
           else
-            exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
+            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
           fi
     ports:
       - "8000:8000"
@@ -51,12 +53,13 @@ services:
   worker:
     build:
       context: .
-      dockerfile: app/Dockerfile
+      dockerfile: app/backendapi/Dockerfile
     container_name: sheet-mcp-worker
-    command: ["python", "-m", "app.workers.run_worker"]
+    command: ["python", "-m", "backendapi.workers.run_worker"]
     env_file:
-      - app/.env
+      - app/backendapi/.env
     environment:
+      PYTHONPATH: /app/app
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
       REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
       DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
@@ -64,7 +67,7 @@ services:
     volumes:
       # Code from host; RQ still loads Python at process start — run `docker compose restart worker` after worker code edits.
       - .:/app
-      - ./runs/pose:/app/runs/pose
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
       postgres:
@@ -79,11 +82,12 @@ services:
   feedback-agent:
     build:
       context: .
-      dockerfile: agents/feedback/Dockerfile
+      dockerfile: app/agents/feedback/Dockerfile
     container_name: sheet-mcp-feedback-agent
     env_file:
-      - agents/.env
+      - app/agents/.env
     environment:
+      PYTHONPATH: /app/app
       PORT: 5055
       DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
       # Public URL users click for share/review links (must be reachable from a browser).
@@ -104,7 +108,7 @@ services:
       - "5055:5055"
     volumes:
       - .:/app
-      - ./runs/pose:/app/runs/pose
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
       - feedback_agent_data:/app/data
     init: true
     restart: unless-stopped

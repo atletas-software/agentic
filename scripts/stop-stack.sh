@@ -27,11 +27,11 @@ echo "Stopping services..."
 kill_port 8000
 kill_port 5055
 
-# RQ worker (python -m app.workers.run_worker)
-pkill -f "app.workers.run_worker" 2>/dev/null && echo "Stopped RQ worker" || echo "No RQ worker process"
+# RQ worker (python -m backendapi.workers.run_worker)
+pkill -f "backendapi.workers.run_worker" 2>/dev/null && echo "Stopped RQ worker" || echo "No RQ worker process"
 
 # Stray uvicorn for this project
-pkill -f "uvicorn app.main:app" 2>/dev/null || true
+pkill -f "uvicorn backendapi.main:app" 2>/dev/null || true
 pkill -f "uvicorn agents.feedback.main:app" 2>/dev/null || true
 
 sleep 1
