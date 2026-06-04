@@ -18,10 +18,16 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 # Prefer psycopg (v3) driver for Postgres to avoid psycopg2 build issues on newer Python.
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+_connect_args: dict = {}
+if DATABASE_URL.startswith("sqlite"):
+    _connect_args["check_same_thread"] = False
+elif DATABASE_URL.startswith("postgresql"):
+    _connect_args["connect_timeout"] = int(os.getenv("DATABASE_CONNECT_TIMEOUT", "30"))
+
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    connect_args=_connect_args,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 

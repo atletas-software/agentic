@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-logger = logging.getLogger("sheet_mcp")
+logger = logging.getLogger("athlete_agent")
 logging.basicConfig(level=logging.INFO)
 
 

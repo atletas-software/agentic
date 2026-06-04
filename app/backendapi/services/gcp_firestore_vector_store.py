@@ -17,13 +17,21 @@ from backendapi.core.logger import info as log_info
 
 
 def _prepare_gcp_credentials() -> None:
-    """Ignore placeholder/missing GOOGLE_APPLICATION_CREDENTIALS so ADC can be used."""
+    """Use VM/workload ADC for Firestore — not the Sheets-only service account JSON."""
     cred_path = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
-    if cred_path and not os.path.isfile(cred_path):
+    sheets_path = (os.getenv("DESTINATION_GOOGLE_CREDENTIALS_FILE") or "").strip()
+    if not cred_path:
+        return
+    use_adc = not os.path.isfile(cred_path)
+    if not use_adc and sheets_path:
+        try:
+            use_adc = os.path.samefile(cred_path, sheets_path)
+        except OSError:
+            use_adc = os.path.basename(cred_path) == os.path.basename(sheets_path)
+    if use_adc:
         log_info(
-            "gcp_credentials_file_missing",
-            path=cred_path,
-            hint="Unset GOOGLE_APPLICATION_CREDENTIALS or point it at a real service-account JSON file.",
+            "gcp_firestore_using_adc",
+            hint="Firestore uses the VM/workload service account; Sheets use DESTINATION_GOOGLE_CREDENTIALS_FILE.",
         )
         os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
 

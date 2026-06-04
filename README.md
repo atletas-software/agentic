@@ -1,4 +1,4 @@
-# Sheet MCP Workflow (FastAPI)
+# Athlete Agent Platform (FastAPI)
 
 FastAPI implementation of the sheet-triggered MCP workflow:
 
@@ -232,11 +232,38 @@ Stop stack:
 make docker-down
 ```
 
+### GCP VM: VM service account vs `credentials.json`
+
+| Service | Auth |
+|--------|------|
+| **Firestore** (player memory vectors) | GCE VM attached service account (`roles/datastore.user`). Do **not** set `GOOGLE_APPLICATION_CREDENTIALS`. |
+| **Cloud SQL** | Cloud SQL Auth Proxy container uses the **same VM service account** (`roles/cloudsql.client`). Do **not** pass `credentials.json` to the proxy. |
+| **Destination / shared Google Sheets** | Dedicated `credentials.json` (Sheets API service account), mounted at `/run/secrets/google-credentials.json` and referenced by `DESTINATION_GOOGLE_CREDENTIALS_FILE` only. |
+
+**VM setup (you already have this on `athlete-agent-vm@athletefocus-agents.iam.gserviceaccount.com`):**
+
+1. Attach that service account to the VM (Compute Engine → VM → Security).
+2. IAM roles on that SA: **Cloud SQL Client**, **Cloud Datastore User** (and any other app roles you need).
+3. On the VM, `app/backendapi/.env`:
+   - `PLAYER_MEMORY_VECTOR_BACKEND=firestore`
+   - `GCP_PROJECT_ID=athletefocus-agents`
+   - `GCP_FIRESTORE_DATABASE=...`
+   - **No** `GOOGLE_APPLICATION_CREDENTIALS` line
+   - `DESTINATION_GOOGLE_CREDENTIALS_FILE=/run/secrets/google-credentials.json`
+4. Repo-root `.env`: `CLOUD_SQL_CONNECTION_NAME`, `CLOUDSQL_USER`, `CLOUDSQL_PASSWORD` (URL-encoded), `CLOUDSQL_DATABASE`.
+5. Deploy:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql up -d --build
+```
+
+**Sheets-only JSON:** put `credentials.json` on the VM; share the destination spreadsheet with that SA email. The JSON does **not** need Cloud SQL or Firestore roles.
+
 ### Production safety notes
 
 - Do not commit real `app/backendapi/.env` or `credentials.json`.
-- `credentials.json` is mounted read-only into containers at `/run/secrets/google-credentials.json`.
-- Use a managed Postgres/Redis and a secret manager in cloud production when possible.
+- `credentials.json` is for **Sheets only**, mounted at `/run/secrets/google-credentials.json`.
+- Use a secret manager in production when possible.
 
 Open the Next.js UI (local dev):
 

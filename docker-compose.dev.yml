@@ -1,4 +1,5 @@
 # Local development overrides (hot reload, bind mounts, compose Postgres).
+name: athlete-agent
 # Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 services:
@@ -54,7 +55,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: sheet-mcp-postgres
+    container_name: athlete-agent-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}

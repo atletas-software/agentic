@@ -1,15 +1,16 @@
 # GCP VM production stack: api + worker + feedback-agent + redis.
+name: athlete-agent
 #
 # Application secrets and URLs: app/backendapi/.env, app/agents/.env
-# Compose interpolation only (repo-root .env): ports, credential mount path, Cloud SQL proxy instance.
+# Compose interpolation only (repo-root .env): ports, Sheets JSON path, Cloud SQL vars.
 #
-# Required in app/backendapi/.env for this stack:
-#   DATABASE_URL=postgresql+psycopg://USER:PASS@cloud-sql-proxy:5432/DB   (with --profile cloudsql)
-#     or postgresql+psycopg://USER:PASS@<private-ip>:5432/DB             (VM in same VPC)
-#     Do NOT use localhost for DB/Redis inside containers.
-#   DESTINATION_GOOGLE_CREDENTIALS_FILE=/run/secrets/google-credentials.json  (if using a JSON key file)
+# GCP VM (recommended):
+#   - Firestore + Cloud SQL: VM service account via ADC (roles/datastore.user + roles/cloudsql.client).
+#   - Google Sheets only: credentials.json mounted at /run/secrets/google-credentials.json.
+#   - Do NOT set GOOGLE_APPLICATION_CREDENTIALS in app/backendapi/.env on the VM.
+#   - Cloud SQL: docker-compose.cloudsql.yml + --profile cloudsql (see .env.example).
 #
-# Compose overrides below win over app/backendapi/.env for Docker network hostnames only.
+# Compose overrides below win over app/backendapi/.env for in-cluster hostnames only.
 #
 # Optional Cloud SQL Auth Proxy (no authorized-network IP whitelist):
 #   CLOUD_SQL_CONNECTION_NAME=project:region:instance  in repo-root .env
@@ -20,7 +21,7 @@ services:
     build:
       context: .
       dockerfile: app/backendapi/Dockerfile
-    container_name: sheet-mcp-api
+    container_name: athlete-agent-api
     env_file:
       - app/backendapi/.env
     environment:
@@ -28,9 +29,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
+      GOOGLE_APPLICATION_CREDENTIALS: ""
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
+      # Sheets API only — not used for Firestore or Cloud SQL (VM service account handles those).
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
       redis:
@@ -55,7 +58,7 @@ services:
     build:
       context: .
       dockerfile: app/backendapi/Dockerfile
-    container_name: sheet-mcp-worker
+    container_name: athlete-agent-worker
     command: ["python", "-m", "backendapi.workers.run_worker"]
     env_file:
       - app/backendapi/.env
@@ -64,6 +67,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
+      GOOGLE_APPLICATION_CREDENTIALS: ""
     volumes:
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
@@ -81,7 +85,7 @@ services:
     build:
       context: .
       dockerfile: app/agents/feedback/Dockerfile
-    container_name: sheet-mcp-feedback-agent
+    container_name: athlete-agent-feedback
     env_file:
       - app/agents/.env
     environment:
@@ -96,7 +100,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: sheet-mcp-redis
+    container_name: athlete-agent-redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -107,7 +111,8 @@ services:
   cloud-sql-proxy:
     profiles: ["cloudsql"]
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.3
-    container_name: sheet-mcp-cloud-sql-proxy
+    container_name: athlete-agent-cloud-sql-proxy
+    # Authenticates with the GCE VM attached service account (metadata). No credentials.json.
     command:
       - /cloud-sql-proxy
       - --address=0.0.0.0

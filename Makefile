@@ -5,7 +5,7 @@ AGENTS_VENV := .venv-agents
 
 COMPOSE := docker compose
 COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
-COMPOSE_CLOUDSQL := $(COMPOSE) --profile cloudsql
+COMPOSE_CLOUDSQL := $(COMPOSE) -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql
 
 .PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod stop-all logs-all ps restart-all
 

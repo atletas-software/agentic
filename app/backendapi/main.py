@@ -4,8 +4,6 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect, text
-
 from backendapi.api.routes.auth import router as auth_router
 from backendapi.api.routes.admin import router as admin_router
 from backendapi.api.routes.admin_auth import router as admin_auth_router
@@ -16,71 +14,15 @@ from backendapi.api.routes.sync import router as sync_router
 from backendapi.api.routes.ui import router as ui_router
 from backendapi.api.routes.workflow import router as workflow_router
 from backendapi.core.env_loader import ensure_env_loaded
-from backendapi.db import Base, engine
+from backendapi.core.startup import init_database_schema
+from backendapi.core.logger import error
 from backendapi.models import google_oauth  # noqa: F401
 from backendapi.models import auth as auth_models  # noqa: F401
 from backendapi.models import workspace as workspace_models  # noqa: F401
+from backendapi.api.routes.player_memory import router as player_memory_router
 from backendapi.services.sync_scheduler import SyncScheduler
 
 ensure_env_loaded()
-Base.metadata.create_all(bind=engine)
-
-
-def _ensure_player_memory_schema() -> None:
-    """Create player memory metadata tables (vectors live in GCP Firestore)."""
-    from backendapi.models.player_memory import (
-        PlayerDirectoryEntry,
-        PlayerMemorySettings,
-        PlayerPersonalContextOverlay,
-        SqlSyncCursor,
-    )
-
-    SqlSyncCursor.__table__.create(bind=engine, checkfirst=True)
-    PlayerMemorySettings.__table__.create(bind=engine, checkfirst=True)
-    PlayerDirectoryEntry.__table__.create(bind=engine, checkfirst=True)
-    PlayerPersonalContextOverlay.__table__.create(bind=engine, checkfirst=True)
-
-
-_ensure_player_memory_schema()
-
-from backendapi.api.routes.player_memory import router as player_memory_router  # noqa: E402
-
-
-def _ensure_sync_enabled_column() -> None:
-    with engine.begin() as connection:
-        inspector = inspect(connection)
-        columns = {col["name"] for col in inspector.get_columns("user_sync_settings")}
-        if "sync_enabled" in columns:
-            return
-        if engine.dialect.name == "sqlite":
-            connection.execute(
-                text(
-                    "ALTER TABLE user_sync_settings "
-                    "ADD COLUMN sync_enabled BOOLEAN NOT NULL DEFAULT 0"
-                )
-            )
-            return
-        connection.execute(
-            text(
-                "ALTER TABLE user_sync_settings "
-                "ADD COLUMN sync_enabled BOOLEAN NOT NULL DEFAULT FALSE"
-            )
-        )
-
-
-_ensure_sync_enabled_column()
-
-
-def _ensure_google_oauth_state_code_verifier_column() -> None:
-    with engine.begin() as connection:
-        inspector = inspect(connection)
-        columns = {col["name"] for col in inspector.get_columns("google_oauth_states")}
-        if "code_verifier" in columns:
-            return
-        connection.execute(text("ALTER TABLE google_oauth_states ADD COLUMN code_verifier TEXT"))
-
-
-_ensure_google_oauth_state_code_verifier_column()
 
 _frontend_origins = [
     o.strip()
@@ -88,7 +30,7 @@ _frontend_origins = [
     if o.strip()
 ]
 
-app = FastAPI(title="Sheet MCP Workflow", version="0.1.0")
+app = FastAPI(title="Athlete Agent API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_frontend_origins,
@@ -106,6 +48,19 @@ async def health() -> dict[str, str]:
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    try:
+        init_database_schema()
+    except Exception as exc:  # noqa: BLE001
+        error(
+            "database_schema_init_failed",
+            error=str(exc),
+            hint=(
+                "With --profile cloudsql, set DATABASE_URL host to cloud-sql-proxy in "
+                "repo-root .env (DATABASE_URL_DOCKER) or app/backendapi/.env. "
+                "Grant the VM or service-account JSON roles/cloudsql.client."
+            ),
+        )
+        raise
     sync_scheduler.start()
 
 

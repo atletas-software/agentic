@@ -1,0 +1,35 @@
+# Merge with docker-compose.yml on a GCE VM that has a service account attached
+# (e.g. athlete-agent-vm@athletefocus-agents.iam.gserviceaccount.com with roles/cloudsql.client).
+#
+# The Cloud SQL proxy uses the VM metadata server (ADC) — do NOT mount credentials.json here.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql up -d --build
+#
+# Repo-root .env (URL-encode special characters in CLOUDSQL_PASSWORD):
+#   CLOUD_SQL_CONNECTION_NAME=athletefocus-agents:region:instance
+#   CLOUDSQL_USER=postgres
+#   CLOUDSQL_PASSWORD=your-url-encoded-password
+#   CLOUDSQL_DATABASE=postgres
+
+services:
+  api:
+    environment:
+      DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
+      # Firestore uses VM ADC; Sheets use DESTINATION_GOOGLE_CREDENTIALS_FILE only.
+      GOOGLE_APPLICATION_CREDENTIALS: ""
+    depends_on:
+      cloud-sql-proxy:
+        condition: service_started
+        required: true
+
+  worker:
+    environment:
+      DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
+      GOOGLE_APPLICATION_CREDENTIALS: ""
+    depends_on:
+      cloud-sql-proxy:
+        condition: service_started
+        required: true
+
+  cloud-sql-proxy:
+    # Uses the GCE VM attached service account (metadata). Requires roles/cloudsql.client on that SA.
