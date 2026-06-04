@@ -3,7 +3,11 @@ SHELL := /bin/bash
 APP_VENV := .venv-app
 AGENTS_VENV := .venv-agents
 
-.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all stop-all logs-all ps restart-all
+COMPOSE := docker compose
+COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
+COMPOSE_CLOUDSQL := $(COMPOSE) --profile cloudsql
+
+.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod stop-all logs-all ps restart-all
 
 help:
 	@echo "Available targets:"
@@ -13,7 +17,9 @@ help:
 	@echo "  make run-api        # run platform API on :8000"
 	@echo "  make run-worker     # run RQ worker"
 	@echo "  make run-feedback   # run feedback agent on :5055"
-	@echo "  make run-all        # setup-env + docker compose up (api/worker/feedback/redis/postgres)"
+	@echo "  make run-all        # local dev: compose + postgres + hot reload"
+	@echo "  make run-prod       # GCP VM: api/worker/feedback-agent/redis"
+	@echo "  make run-prod-cloudsql  # same + Cloud SQL Auth Proxy (set CLOUD_SQL_CONNECTION_NAME in .env)"
 	@echo "  make stop-all       # stop all docker services"
 	@echo "  make logs-all       # tail docker compose logs"
 	@echo "  make ps             # show docker compose service status"
@@ -43,16 +49,22 @@ run-feedback:
 	PYTHONPATH=app "$(AGENTS_VENV)/bin/uvicorn" agents.feedback.main:app --host 0.0.0.0 --port 5055
 
 run-all: setup-env
-	docker compose up -d --build
+	$(COMPOSE_DEV) up -d --build
+
+run-prod: setup-env
+	$(COMPOSE) up -d --build
+
+run-prod-cloudsql: setup-env
+	$(COMPOSE_CLOUDSQL) up -d --build
 
 stop-all:
-	docker compose down
+	$(COMPOSE_DEV) down --remove-orphans 2>/dev/null || $(COMPOSE) down --remove-orphans
 
 logs-all:
-	docker compose logs -f
+	$(COMPOSE) logs -f
 
 ps:
-	docker compose ps
+	$(COMPOSE) ps
 
 restart-all:
-	docker compose restart
+	$(COMPOSE) restart

@@ -1,5 +1,19 @@
-# Compose reads repo-root `.env` for ${POSTGRES_PASSWORD} etc.
-# API/worker load `app/backendapi/.env` inside containers; runtime URLs below override hostnames for in-cluster networking.
+# GCP VM production stack: api + worker + feedback-agent + redis.
+#
+# Application secrets and URLs: app/backendapi/.env, app/agents/.env
+# Compose interpolation only (repo-root .env): ports, credential mount path, Cloud SQL proxy instance.
+#
+# Required in app/backendapi/.env for this stack:
+#   DATABASE_URL=postgresql+psycopg://USER:PASS@cloud-sql-proxy:5432/DB   (with --profile cloudsql)
+#     or postgresql+psycopg://USER:PASS@<private-ip>:5432/DB             (VM in same VPC)
+#   REDIS_URL=redis://redis:6379/0
+#   FEEDBACK_AGENT_BASE_URL=http://feedback-agent:5055
+#   DESTINATION_GOOGLE_CREDENTIALS_FILE=/run/secrets/google-credentials.json  (if using a JSON key file)
+#
+# Optional Cloud SQL Auth Proxy (no authorized-network IP whitelist):
+#   CLOUD_SQL_CONNECTION_NAME=project:region:instance  in repo-root .env
+#   docker compose --profile cloudsql up -d --build
+
 services:
   api:
     build:
@@ -10,37 +24,20 @@ services:
       - app/backendapi/.env
     environment:
       PYTHONPATH: /app/app
-      # Force container-network defaults unless explicitly overridden.
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
-      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
-      DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
-      FEEDBACK_AGENT_BASE_URL: ${FEEDBACK_AGENT_BASE_URL_DOCKER:-http://feedback-agent:5055}
-      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
-      # Set DEV_HOT_RELOAD=0 in root .env for production (multi-worker, no auto-reload).
-      DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      cloud-sql-proxy:
+        condition: service_started
+        required: false
     command:
       - sh
       - -c
-      - |
-          set -e
-          if [ "$${DEV_HOT_RELOAD:-0}" = "1" ]; then
-            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --reload
-          else
-            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
-          fi
-    ports:
-      - "8000:8000"
-    volumes:
-      # Live code + static files from host (no image rebuild on edit). Matches Dockerfile WORKDIR /app.
-      - .:/app
-      # Keep Google service-account credentials outside image layers.
-      - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
       interval: 15s
@@ -60,22 +57,16 @@ services:
       - app/backendapi/.env
     environment:
       PYTHONPATH: /app/app
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}}
-      REDIS_URL: ${REDIS_URL_DOCKER:-redis://redis:6379/0}
-      DESTINATION_GOOGLE_CREDENTIALS_FILE: ${DESTINATION_GOOGLE_CREDENTIALS_FILE_DOCKER:-/run/secrets/google-credentials.json}
-      FEEDBACK_AGENT_BASE_URL: ${FEEDBACK_AGENT_BASE_URL_DOCKER:-http://feedback-agent:5055}
     volumes:
-      # Code from host; RQ still loads Python at process start — run `docker compose restart worker` after worker code edits.
-      - .:/app
-      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
       feedback-agent:
         condition: service_started
+      cloud-sql-proxy:
+        condition: service_started
+        required: false
     init: true
     restart: unless-stopped
 
@@ -88,28 +79,11 @@ services:
       - app/agents/.env
     environment:
       PYTHONPATH: /app/app
-      PORT: 5055
-      DEV_HOT_RELOAD: ${DEV_HOT_RELOAD:-1}
-      # Public URL users click for share/review links (must be reachable from a browser).
-      # Same-server deploy default: http://<server-host>:5055. Override via root .env: PUBLIC_BASE_URL=...
-      # Leave empty only for local dev where the agent is on 127.0.0.1.
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-    command:
-      - sh
-      - -c
-      - |
-          set -e
-          if [ "$${DEV_HOT_RELOAD:-0}" = "1" ]; then
-            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055} --reload
-          else
-            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055}
-          fi
     ports:
-      - "5055:5055"
+      - "${FEEDBACK_AGENT_PORT:-5055}:5055"
     volumes:
-      - .:/app
-      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
       - feedback_agent_data:/app/data
+    command: ["uvicorn", "agents.feedback.main:app", "--host", "0.0.0.0", "--port", "5055"]
     init: true
     restart: unless-stopped
 
@@ -123,24 +97,16 @@ services:
       retries: 5
     restart: unless-stopped
 
-  postgres:
-      image: pgvector/pgvector:pg16
-      container_name: sheet-mcp-postgres
-      restart: unless-stopped
-      environment:
-        POSTGRES_USER: ${POSTGRES_USER:-postgres}
-        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strongpassword}
-        POSTGRES_DB: ${POSTGRES_DB:-athlete}
-      ports:
-        - "${POSTGRES_PORT:-5432}:5432"
-      volumes:
-        - postgres_data:/var/lib/postgresql/data
-      healthcheck:
-        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-athlete}"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
+  cloud-sql-proxy:
+    profiles: ["cloudsql"]
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.3
+    container_name: sheet-mcp-cloud-sql-proxy
+    command:
+      - /cloud-sql-proxy
+      - --address=0.0.0.0
+      - --port=5432
+      - ${CLOUD_SQL_CONNECTION_NAME}
+    restart: unless-stopped
 
 volumes:
-  postgres_data:
   feedback_agent_data:

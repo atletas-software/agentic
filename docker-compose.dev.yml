@@ -1,0 +1,74 @@
+# Local development overrides (hot reload, bind mounts, compose Postgres).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+services:
+  api:
+    env_file:
+      - app/backendapi/.env
+    volumes:
+      - .:/app
+      - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+          set -e
+          if [ "$${DEV_HOT_RELOAD:-1}" = "1" ]; then
+            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --reload
+          else
+            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
+          fi
+
+  worker:
+    volumes:
+      - .:/app
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
+      - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      feedback-agent:
+        condition: service_started
+
+  feedback-agent:
+    volumes:
+      - .:/app
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
+    command:
+      - sh
+      - -c
+      - |
+          set -e
+          if [ "$${DEV_HOT_RELOAD:-1}" = "1" ]; then
+            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055} --reload
+          else
+            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055}
+          fi
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sheet-mcp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strongpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-athlete}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-athlete}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

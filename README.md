@@ -57,12 +57,12 @@ Typical flow when everything is enabled:
 | File | Purpose |
 |------|--------|
 | **`app/backendapi/.env`** | Primary application config: OAuth, `DATABASE_URL`, `REDIS_URL`, player memory, destination sheet, etc. Used when you run `make run-api` / `make run-worker` locally and **mounted into API/worker containers** when using Compose. |
-| **`.env`** (repo root, optional) | Copy from **`.env.example`** at the repo root. Docker Compose reads this automatically for **interpolation** in `docker-compose.yml` (`POSTGRES_PASSWORD`, `POSTGRES_DB`, ports). Keep Postgres credentials **consistent** with the user/password in `app/backendapi/.env`’s `DATABASE_URL` when your local URL points at the same Postgres (e.g. `localhost:5432`). |
+| **`.env`** (repo root, optional) | Copy from **`.env.example`** at the repo root. Used only for Compose **interpolation** (ports, `GOOGLE_CREDENTIALS_FILE_HOST`, optional `CLOUD_SQL_CONNECTION_NAME`). Application URLs and secrets belong in **`app/backendapi/.env`**. |
 | **`app/agents/.env`** | Feedback agent secrets (`OPENAI_API_KEY`, etc.). Used by the feedback container via `env_file`; mirror variables locally when running `make run-feedback`. |
 
-At runtime, the platform loads **`app/backendapi/.env` first**, then merges **repo-root `.env`** only for keys that are still unset (`override=False`). Variables injected by Compose (`DATABASE_URL`, `REDIS_URL`, …) are never overwritten by dotenv.
+At runtime, the platform loads **`app/backendapi/.env` first**, then merges **repo-root `.env`** only for keys that are still unset (`override=False`).
 
-Inside Compose, **`docker-compose.yml`** overrides `DATABASE_URL`, `REDIS_URL`, `FEEDBACK_AGENT_BASE_URL`, and the destination credentials path so containers talk to `postgres`, `redis`, and `feedback-agent` by service name. Defaults match **`DATABASE_URL_DOCKER`**, **`REDIS_URL_DOCKER`**, etc., so you usually **do not** duplicate those in `.env` unless you customize clusters.
+For Docker, set in-cluster URLs in **`app/backendapi/.env`**: `REDIS_URL=redis://redis:6379/0`, `FEEDBACK_AGENT_BASE_URL=http://feedback-agent:5055`, and `DATABASE_URL` pointing at Cloud SQL (private IP or `cloud-sql-proxy` — see **GCP VM** below).
 
 Player memory SQL/vector runtime settings are now managed from the admin panel (`/admin/player-memory`) and persisted encrypted in the DB. Keep `PLAYER_MEMORY_SETTINGS_MASTER_KEY` set in `app/backendapi/.env`; `PLAYER_CONTEXT_*`, `PINECONE_*`, and chunk/retrieval values in env act as bootstrap defaults until admin settings are saved.
 
@@ -190,27 +190,30 @@ For local feedback setup, prefer **`make run-feedback`**; Compose can run the sa
 
 ```bash
 cp app/backendapi/.env.example app/backendapi/.env
-cp .env.example .env        # repo root — supplies POSTGRES_* for compose interpolation
+cp .env.example .env
+cp app/agents/.env.example app/agents/.env
 ```
 
-Edit **`app/backendapi/.env`** with OAuth, secrets, and (for host-side tools) `DATABASE_URL` pointing at `localhost` if you use the compose Postgres port mapping. Align **`POSTGRES_PASSWORD`** in repo-root **`.env`** with the password in that URL.
+Edit **`app/backendapi/.env`** with OAuth, secrets, and Docker URLs (`REDIS_URL`, `FEEDBACK_AGENT_BASE_URL`, `DATABASE_URL`).
 
-Optional: **`app/agents/.env`** from `app/agents/.env.example` for the feedback container.
+2) Start the stack:
 
-2) Start the full stack:
+**GCP VM (production)** — Cloud SQL + Firestore + in-compose Redis; no local Postgres:
+
+```bash
+make run-prod
+# or: docker compose --profile cloudsql up -d --build   # when using Cloud SQL Auth Proxy
+```
+
+**Local dev** — adds Postgres, bind mounts, and hot reload:
 
 ```bash
 make run-all
-# equivalent: make docker-up   →  docker compose up -d --build
 ```
 
-This starts:
+Production Compose services: `api`, `worker`, `feedback-agent`, `redis`, optional `cloud-sql-proxy` (`--profile cloudsql`).
 
-- `api` (FastAPI app)
-- `worker` (`python -m backendapi.workers.run_worker`)
-- `feedback-agent` (FastAPI feedback service on `:5055`)
-- `redis`
-- `postgres`
+Local dev also starts `postgres` via `docker-compose.dev.yml`.
 
 3) Verify deployment:
 
