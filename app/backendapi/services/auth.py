@@ -81,6 +81,18 @@ def create_admin_session(email: str, db: Session) -> AdminSession:
     return session
 
 
+def admin_session_cookie_kwargs() -> dict[str, object]:
+    """Cookie flags for admin session (same-site vs cross-origin HTTPS)."""
+    secure_raw = (os.getenv("ADMIN_SESSION_COOKIE_SECURE") or "").strip().lower()
+    secure = secure_raw in ("1", "true", "yes")
+    samesite = (os.getenv("ADMIN_SESSION_COOKIE_SAMESITE") or "lax").strip().lower()
+    if samesite not in ("lax", "strict", "none"):
+        samesite = "lax"
+    if samesite == "none" and not secure:
+        secure = True
+    return {"httponly": True, "secure": secure, "samesite": samesite}
+
+
 def deactivate_admin_session(session_id: str, db: Session) -> None:
     row = db.query(AdminSession).filter(AdminSession.session_id == session_id, AdminSession.is_active.is_(True)).one_or_none()
     if row is None:

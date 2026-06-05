@@ -13,6 +13,7 @@ from backendapi.models.auth import UserAccount
 def get_player_memory_user_id(
     db: Session = Depends(get_db),
     admin_session_id: str | None = Cookie(default=None),
+    x_admin_session_id: str | None = Header(default=None, alias="X-Admin-Session-Id"),
     authorization: str | None = Header(default=None),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> str:
@@ -34,6 +35,10 @@ def get_player_memory_user_id(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
         return str(user.id)
 
-    get_admin_session_context(admin_session_id=admin_session_id, db=db)
+    get_admin_session_context(
+        admin_session_id=admin_session_id,
+        x_admin_session_id=x_admin_session_id,
+        db=db,
+    )
     # System-scoped admin pipeline workspace (single tenant for destination-tab-driven sync).
     return "0"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backendapi.db import get_db
@@ -58,15 +58,17 @@ def get_admin_user_context(context: dict[str, str] = Depends(get_current_user_co
 
 def get_admin_session_context(
     admin_session_id: str | None = Cookie(default=None),
+    x_admin_session_id: str | None = Header(default=None, alias="X-Admin-Session-Id"),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    if not admin_session_id:
+    session_id = (admin_session_id or x_admin_session_id or "").strip() or None
+    if not session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing admin session.")
     now = datetime.now(UTC)
     session = (
         db.query(AdminSession)
         .filter(
-            AdminSession.session_id == admin_session_id,
+            AdminSession.session_id == session_id,
             AdminSession.is_active.is_(True),
             AdminSession.expires_at > now,
         )

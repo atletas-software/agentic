@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backendapi.db import get_db
 from backendapi.dependencies.auth import get_admin_session_context
-from backendapi.services.auth import create_admin_session, deactivate_admin_session
+from backendapi.services.auth import admin_session_cookie_kwargs, create_admin_session, deactivate_admin_session
 
 router = APIRouter(prefix="/admin-auth", tags=["admin-auth"])
 
@@ -31,15 +31,14 @@ async def admin_login(payload: AdminLoginRequest, response: Response, db: Sessio
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials.")
 
     session = create_admin_session(email=email, db=db)
+    cookie_kwargs = admin_session_cookie_kwargs()
     response.set_cookie(
         key="admin_session_id",
         value=session.session_id,
-        httponly=True,
-        secure=False,
-        samesite="lax",
         max_age=max(1, int((session.expires_at - session.created_at).total_seconds())),
+        **cookie_kwargs,
     )
-    return {"success": True, "email": email}
+    return {"success": True, "email": email, "session_id": session.session_id}
 
 
 @router.get("/me")
@@ -51,9 +50,11 @@ async def admin_me(context: dict = Depends(get_admin_session_context)) -> dict:
 async def admin_logout(
     response: Response,
     admin_session_id: str | None = Cookie(default=None),
+    x_admin_session_id: str | None = Header(default=None, alias="X-Admin-Session-Id"),
     db: Session = Depends(get_db),
 ) -> dict:
-    if admin_session_id:
-        deactivate_admin_session(session_id=admin_session_id, db=db)
-    response.delete_cookie("admin_session_id")
+    session_id = (admin_session_id or x_admin_session_id or "").strip() or None
+    if session_id:
+        deactivate_admin_session(session_id=session_id, db=db)
+    response.delete_cookie("admin_session_id", **admin_session_cookie_kwargs())
     return {"success": True}
