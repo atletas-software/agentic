@@ -6,16 +6,19 @@ import re
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+from google.api_core.exceptions import DeadlineExceeded
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from backendapi.core.logger import info as log_info
 from backendapi.db import get_db
+from backendapi.services.external_sql_engine import get_external_sql_engine
 from backendapi.dependencies.auth import get_admin_session_context
 from backendapi.models.auth import UserAccount
 from backendapi.models.workspace import AgentJob, Workspace, WorkspaceContextItem
@@ -89,6 +92,14 @@ class PlayerMemoryManualBody(BaseModel):
     player_key: str = Field(..., min_length=1)
     text: str = Field(..., min_length=1)
     label: str = Field(default="", max_length=256)
+
+
+class VectorRetrievalTestBody(BaseModel):
+    player_key: str = Field(..., min_length=1)
+    query: str = Field(
+        default="soccer player coaching technical skills development",
+        max_length=2000,
+    )
 
 
 class SharedContextManualBody(BaseModel):
@@ -206,13 +217,27 @@ def _merge_masked_secrets_with_existing(db: Session, incoming: dict) -> dict:
     return merged
 
 
-def _normalize_external_db_url(raw_db_url: str) -> str:
-    url = (raw_db_url or "").strip()
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+psycopg://", 1)
-    if url.startswith("mysql://"):
-        return url.replace("mysql://", "mysql+pymysql://", 1)
-    return url
+def _sportal_sql_engine(db: Session) -> tuple[Engine | None, str]:
+    """Shared pooled Sportal MySQL engine (avoids per-request engines exhausting max_connections)."""
+    cfg = get_player_memory_settings(db)
+    raw_db_url = str(cfg.get("sql_database_url") or "").strip()
+    if not raw_db_url:
+        return None, ""
+    return get_external_sql_engine(raw_db_url), raw_db_url
+
+
+def _raise_sportal_db_http_error(exc: Exception) -> None:
+    detail = str(exc)
+    if "1040" in detail or "Too many connections" in detail:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Sportal MySQL refused the connection (too many connections). "
+                "Wait a minute and retry. If this persists, close idle DB clients or raise "
+                "max_connections on the Sportal server."
+            ),
+        ) from exc
+    raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def _preview_sql_bind_params(sql_query: str) -> dict[str, Any]:
@@ -320,8 +345,9 @@ async def admin_test_player_memory_connection(
         _ensure_read_only_select_sql(probe_sql)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    url = _normalize_external_db_url(raw_db_url)
-    eng = create_engine(url, pool_pre_ping=True)
+    eng = get_external_sql_engine(raw_db_url)
+    if eng is None:
+        return {"ok": False, "reason": "invalid_sql_database_url"}
     preview_rows: list[dict] = []
     stmt = _sql_append_limit(probe_sql, preview_limit)
     with eng.connect() as conn:
@@ -367,6 +393,60 @@ async def admin_test_vector_connection(
     return {"ok": True, "backend": backend, "health": health, "stats": stats}
 
 
+@router.post("/player-memory/test-retrieval")
+async def admin_test_vector_retrieval(
+    body: VectorRetrievalTestBody,
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Test Firestore list + vector search for one player_key (debug coaching RAG)."""
+    from backendapi.services.feedback_memory import retrieve_player_memory_context
+
+    ws = ensure_workspace(user_id="0", db=db)
+    pk = body.player_key.strip()
+    payload = {
+        "coaching_focus": body.query.strip(),
+        "player_focus": body.query.strip(),
+        "sport": "Soccer",
+    }
+    mem, debug = retrieve_player_memory_context(
+        db=db,
+        workspace_id=ws.id,
+        player_key=pk,
+        payload=payload,
+    )
+    try:
+        stored, total = list_chunks(
+            db=db,
+            workspace_id=ws.id,
+            context_scope=CONTEXT_SCOPE_PERSONAL,
+            player_key=pk,
+            limit=5,
+            offset=0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        stored, total = [], 0
+        debug["list_chunks_error"] = str(exc)
+    return {
+        "ok": bool(mem) or total > 0,
+        "workspace_id": ws.id,
+        "player_key": pk,
+        "stored_chunk_total": total,
+        "retrieval_outcome": debug.get("outcome"),
+        "retrieval_debug": debug,
+        "context_chars": len(mem or ""),
+        "context_preview": (mem or "")[:1500] if mem else None,
+        "sample_stored_chunks": [
+            {
+                "source_type": ch.get("source_type"),
+                "source_ref": ch.get("source_ref"),
+                "content_preview": str(ch.get("content") or "")[:240],
+            }
+            for ch in stored[:3]
+        ],
+    }
+
+
 @router.post("/player-memory/test-sql-player")
 async def admin_test_sql_for_player(
     body: SqlPlayerPreviewBody,
@@ -384,8 +464,9 @@ async def admin_test_sql_for_player(
         _ensure_read_only_select_sql(sql_query)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    url = _normalize_external_db_url(raw_db_url)
-    eng = create_engine(url, pool_pre_ping=True)
+    eng = get_external_sql_engine(raw_db_url)
+    if eng is None:
+        return {"ok": False, "reason": "invalid_sql_database_url"}
     params = {"player_user_id": body.player_user_id}
     stmt = _sql_append_limit(sql_query, body.preview_limit)
     preview_rows: list[dict] = []
@@ -786,8 +867,9 @@ async def admin_list_external_profiles(
             "limit": limit,
             "offset": offset,
         }
-    url = _normalize_external_db_url(raw_db_url)
-    eng = create_engine(url, pool_pre_ping=True)
+    eng = get_external_sql_engine(raw_db_url)
+    if eng is None:
+        return {"ok": False, "reason": "invalid_sql_database_url", "profiles": [], "limit": limit, "offset": offset}
     search = q.strip()
     profiles: list[dict[str, Any]] = []
     try:
@@ -838,15 +920,14 @@ async def admin_list_external_profiles(
 
 def _lookup_sportal_profile_by_id(db: Session, player_id: int) -> dict[str, Any] | None:
     """Return Sportal profile row by primary key, or None if missing / SQL not configured."""
-    cfg = get_player_memory_settings(db)
-    raw_db_url = str(cfg.get("sql_database_url") or "").strip()
+    eng, raw_db_url = _sportal_sql_engine(db)
     if not raw_db_url:
         raise HTTPException(
             status_code=400,
             detail="MySQL URL is not configured. Set it in SQL & settings before syncing players.",
         )
-    url = _normalize_external_db_url(raw_db_url)
-    eng = create_engine(url, pool_pre_ping=True)
+    if eng is None:
+        raise HTTPException(status_code=400, detail="Invalid MySQL URL in player memory settings.")
     try:
         with eng.connect() as conn:
             res = conn.execute(
@@ -861,8 +942,10 @@ def _lookup_sportal_profile_by_id(db: Session, player_id: int) -> dict[str, Any]
                 {"pid": player_id},
             )
             row = res.mappings().first()
+    except OperationalError as exc:
+        _raise_sportal_db_http_error(exc)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _raise_sportal_db_http_error(exc)
     if row is None:
         return None
     return _normalize_external_profile_row(dict(row))
@@ -923,11 +1006,23 @@ async def admin_run_player_sql_sync_inline(
     ws = ensure_workspace(user_id="0", db=db)
     fn = body.first_name.strip() or str(profile.get("first_name") or "")
     ln = body.last_name.strip() or str(profile.get("last_name") or "")
-    result = sync_sql_context_for_workspace(
-        db=db,
-        workspace_id=ws.id,
-        single_player={"player_id": body.player_id, "first_name": fn, "last_name": ln},
-    )
+    try:
+        result = sync_sql_context_for_workspace(
+            db=db,
+            workspace_id=ws.id,
+            single_player={"player_id": body.player_id, "first_name": fn, "last_name": ln},
+        )
+    except OperationalError as exc:
+        _raise_sportal_db_http_error(exc)
+    except DeadlineExceeded as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Firestore write timed out while saving vectors. "
+                "Restart the API, re-sync this player (old chunks may be partial). "
+                "New syncs use smaller batches; set FIRESTORE_WRITE_BATCH_SIZE=10 if needed."
+            ),
+        ) from exc
     return dict(result)
 
 
@@ -1258,6 +1353,18 @@ class AdminAgentsUserIdBody(BaseModel):
     user_id: str = Field(..., min_length=1)
 
 
+class AgentsLabRagChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=8000)
+
+
+class AgentsLabRagChatBody(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    player_key: str = Field(..., min_length=1, max_length=128)
+    history: list[AgentsLabRagChatTurn] = Field(default_factory=list)
+    include_shared: bool = True
+
+
 def _admin_require_user(db: Session, user_id: str) -> UserAccount:
     try:
         uid = int(str(user_id).strip())
@@ -1488,6 +1595,46 @@ async def agents_lab_cancel_agent_job(
 
     db.commit()
     return {"ok": True, "stopped": "running", "review_id": review_id or None}
+
+
+@router.post("/agents-lab/rag-chat")
+async def agents_lab_rag_chat(
+    body: AgentsLabRagChatBody,
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    RAG chat: embed the user message, search Firestore player + shared vectors, answer with OpenAI.
+    Uses admin player-memory workspace (user_id=0); player_key is the Sportal / vector id (e.g. 19058).
+    """
+    from backendapi.services.rag_chat import run_rag_chat
+
+    ws = ensure_workspace(user_id="0", db=db)
+    history = [{"role": t.role, "content": t.content} for t in body.history]
+    try:
+        return run_rag_chat(
+            db=db,
+            workspace_id=ws.id,
+            player_key=body.player_key.strip(),
+            message=body.message.strip(),
+            history=history,
+            include_shared=body.include_shared,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/agents-lab/rag-players")
+async def agents_lab_rag_players(
+    search: str = Query(default="", max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Players with vectors in Firestore (for Agent Lab chat player picker)."""
+    ws = ensure_workspace(user_id="0", db=db)
+    players = list_personal_player_keys(db=db, workspace_id=ws.id, search=search.strip())
+    return {"players": players[:limit], "workspace_id": ws.id}
 
 
 @router.post("/agents-lab/workspace-refresh")

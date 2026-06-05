@@ -11,6 +11,7 @@ from backendapi.services.embedding_service import (
     embedding_dimensions,
     embedding_model_name,
 )
+from backendapi.core.logger import error as log_error
 from backendapi.services.player_memory_settings import get_player_memory_settings
 from backendapi.services.player_memory_service import (
     format_retrieval_context,
@@ -100,6 +101,16 @@ def retrieve_player_memory_context(
             )
         except Exception as exc:  # noqa: BLE001
             debug["personal_search_error"] = str(exc)
+            log_error(
+                "player_memory_personal_search_failed",
+                player_key=player_key.strip(),
+                workspace_id=workspace_id,
+                error=str(exc),
+                hint=(
+                    "Firestore may need a composite vector index on workspace_id + player_key. "
+                    "See Admin → Player memory → test retrieval or GCP Firestore indexes."
+                ),
+            )
 
     try:
         shared_chunks = search_similar_chunks(

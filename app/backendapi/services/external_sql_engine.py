@@ -24,7 +24,8 @@ def get_external_sql_engine(database_url: str) -> Engine | None:
     return create_engine(
         normalized,
         pool_pre_ping=True,
-        pool_size=2,
-        max_overflow=3,
-        pool_recycle=180,
+        pool_size=1,
+        max_overflow=2,
+        pool_timeout=30,
+        pool_recycle=300,
     )

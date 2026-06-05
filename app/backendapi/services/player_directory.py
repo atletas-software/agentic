@@ -73,6 +73,55 @@ def display_names_by_player_keys(
     return out
 
 
+def search_players_by_name_fragment(
+    *,
+    db: Session,
+    workspace_id: int,
+    fragment: str,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    """Fuzzy match on display_name / name_key (e.g. 'rayyan' → 'rayyan ahmed')."""
+    needle = (fragment or "").strip().lower()
+    if len(needle) < 2:
+        return []
+    rows = (
+        db.query(PlayerDirectoryEntry)
+        .filter(PlayerDirectoryEntry.workspace_id == workspace_id)
+        .all()
+    )
+    scored: list[tuple[int, dict[str, str]]] = []
+    for row in rows:
+        display = str(row.display_name or "").strip()
+        name_key = str(row.name_key or "").strip()
+        pk = str(row.player_key or "").strip()
+        if not pk:
+            continue
+        hay = f"{display} {name_key}".lower()
+        if needle not in hay:
+            continue
+        score = 0
+        if name_key == needle or display.lower() == needle:
+            score += 100
+        elif display.lower().startswith(needle) or name_key.startswith(needle):
+            score += 50
+        elif f" {needle}" in f" {name_key}" or f" {needle}" in f" {display.lower()}":
+            score += 30
+        else:
+            score += 10
+        scored.append((score, {"player_key": pk, "display_name": display or pk}))
+    scored.sort(key=lambda x: (-x[0], x[1]["display_name"]))
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, item in scored:
+        if item["player_key"] in seen:
+            continue
+        seen.add(item["player_key"])
+        out.append(item)
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
 def resolve_player_key_by_name(*, db: Session, workspace_id: int, first_name: str, last_name: str) -> str | None:
     name_key = normalize_name_key(first_name, last_name)
     if not name_key:

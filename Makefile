@@ -7,7 +7,7 @@ COMPOSE := docker compose
 COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 COMPOSE_CLOUDSQL := $(COMPOSE) -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql
 
-.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod stop-all logs-all ps restart-all
+.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod run-prod-cloudsql clean-legacy stop-all logs-all ps restart-all
 
 help:
 	@echo "Available targets:"
@@ -19,7 +19,8 @@ help:
 	@echo "  make run-feedback   # run feedback agent on :5055"
 	@echo "  make run-all        # local dev: compose + postgres + hot reload"
 	@echo "  make run-prod       # GCP VM: api/worker/feedback-agent/redis"
-	@echo "  make run-prod-cloudsql  # same + Cloud SQL Auth Proxy (set CLOUD_SQL_CONNECTION_NAME in .env)"
+	@echo "  make run-prod-cloudsql  # GCP VM + Cloud SQL proxy (stops legacy sheet-mcp-* first)"
+	@echo "  make clean-legacy   # remove old sheet-mcp-* containers (frees :8000 / :5055)"
 	@echo "  make stop-all       # stop all docker services"
 	@echo "  make logs-all       # tail docker compose logs"
 	@echo "  make ps             # show docker compose service status"
@@ -54,7 +55,12 @@ run-all: setup-env
 run-prod: setup-env
 	$(COMPOSE) up -d --build
 
-run-prod-cloudsql: setup-env
+clean-legacy:
+	-docker rm -f sheet-mcp-api sheet-mcp-worker sheet-mcp-feedback-agent sheet-mcp-redis sheet-mcp-cloud-sql-proxy sheet-mcp-postgres 2>/dev/null
+	@echo "Legacy sheet-mcp-* containers removed (if any were running)."
+
+run-prod-cloudsql: setup-env clean-legacy
+	$(COMPOSE_CLOUDSQL) down --remove-orphans 2>/dev/null || true
 	$(COMPOSE_CLOUDSQL) up -d --build
 
 stop-all:

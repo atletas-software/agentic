@@ -58,12 +58,12 @@ def structured_chunks_from_player_row(row: dict[str, str]) -> list[tuple[str, st
     header = _player_header(row)
 
     player_context = document_from_sql_row(row)
+    # Slim metadata only — do not store full player_context on every chunk (bloats Firestore writes).
     base_meta: dict[str, Any] = {
         "vector_format": PLAYER_CONTEXT_VECTOR_FORMAT,
         "player_user_id": player_context["player_user_id"],
         "player_name": player_name,
         "club_name": club_name,
-        "player_context": player_context,
     }
 
     profile = clean_embedding_text(_scalar(row, "profile_text"), min_length=1)

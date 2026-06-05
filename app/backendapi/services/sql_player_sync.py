@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from backendapi.models.player_memory import SqlSyncCursor
@@ -287,24 +288,37 @@ def sync_sql_context_for_workspace(
                         "SELECT :player_user_id AS player_user_id in the FROM base subquery, then Save."
                     ),
                 }
-    with eng.connect() as conn:
-        if sp:
-            params, bind_err = _single_player_bind_params(sql, sp)
-            if bind_err is not None:
-                return bind_err
-            if ":last_watermark" in sql and last_watermark:
-                params["last_watermark"] = last_watermark
-            result = conn.execute(text(sql), params)
-            cols = list(result.keys())
-            rows = [tuple(row) for row in result.fetchall()]
-        else:
-            stmt = text(sql)
-            params: dict[str, Any] = {}
-            if ":last_watermark" in sql and last_watermark:
-                params["last_watermark"] = last_watermark
-            result = conn.execute(stmt, params)
-            cols = list(result.keys())
-            rows = [tuple(row) for row in result.fetchall()]
+    try:
+        with eng.connect() as conn:
+            if sp:
+                params, bind_err = _single_player_bind_params(sql, sp)
+                if bind_err is not None:
+                    return bind_err
+                if ":last_watermark" in sql and last_watermark:
+                    params["last_watermark"] = last_watermark
+                result = conn.execute(text(sql), params)
+                cols = list(result.keys())
+                rows = [tuple(row) for row in result.fetchall()]
+            else:
+                stmt = text(sql)
+                params: dict[str, Any] = {}
+                if ":last_watermark" in sql and last_watermark:
+                    params["last_watermark"] = last_watermark
+                result = conn.execute(stmt, params)
+                cols = list(result.keys())
+                rows = [tuple(row) for row in result.fetchall()]
+    except OperationalError as exc:
+        detail = str(exc)
+        if "1040" in detail or "Too many connections" in detail:
+            return {
+                "ok": False,
+                "reason": "sportal_mysql_too_many_connections",
+                "detail": (
+                    "Sportal MySQL max_connections exceeded. Wait and retry, or reduce "
+                    "concurrent syncs. The API uses a shared small pool (not a new pool per request)."
+                ),
+            }
+        return {"ok": False, "reason": "sportal_mysql_error", "detail": detail}
 
     if _is_structured_sql_columns(cols):
         return _sync_structured_sql_rows(

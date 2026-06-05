@@ -113,8 +113,8 @@ services:
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.3
     container_name: athlete-agent-cloud-sql-proxy
     # Authenticates with the GCE VM attached service account (metadata). No credentials.json.
+    # Image ENTRYPOINT is already /cloud-sql-proxy — do not repeat it in command.
     command:
-      - /cloud-sql-proxy
       - --address=0.0.0.0
       - --port=5432
       - ${CLOUD_SQL_CONNECTION_NAME}

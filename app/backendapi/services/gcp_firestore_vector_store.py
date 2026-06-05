@@ -6,6 +6,8 @@ import os
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
+from google.api_core import retry as api_retry
+from google.api_core.exceptions import DeadlineExceeded
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
@@ -13,7 +15,17 @@ from google.cloud.firestore_v1.vector import Vector
 
 from backendapi.services.context_scope import CONTEXT_SCOPE_PERSONAL, CONTEXT_SCOPE_SHARED, normalize_context_scope
 from backendapi.services.embedding_service import FIRESTORE_MAX_EMBEDDING_DIM, content_hash, embed_texts
-from backendapi.core.logger import info as log_info
+from backendapi.core.logger import error as log_error, info as log_info
+
+# Vector documents are large; small batches + retries avoid Firestore commit deadline exceeded.
+_FIRESTORE_WRITE_BATCH_SIZE = int(os.getenv("FIRESTORE_WRITE_BATCH_SIZE", "20"))
+_FIRESTORE_COMMIT_RETRY = api_retry.Retry(
+    predicate=api_retry.if_exception_type(DeadlineExceeded),
+    initial=2.0,
+    maximum=30.0,
+    multiplier=2.0,
+    deadline=120.0,
+)
 
 
 def _prepare_gcp_credentials() -> None:
@@ -60,6 +72,23 @@ def _collection_name(settings: dict[str, Any], context_scope: str) -> str:
     if scope == CONTEXT_SCOPE_SHARED:
         return str(settings.get("vector_collection_shared") or "shared_context")
     return str(settings.get("vector_collection_personal") or "player_personal_context")
+
+
+def _slim_chunk_metadata(meta: dict[str, Any]) -> dict[str, Any]:
+    """Drop duplicated bulky fields before Firestore write."""
+    slim = {k: v for k, v in meta.items() if k != "player_context"}
+    chunk_text = str(slim.get("chunk_text") or "")
+    if len(chunk_text) > 12_000:
+        slim["chunk_text"] = chunk_text[:12_000]
+    return slim
+
+
+def _commit_write_batch(batch: firestore.WriteBatch, *, label: str) -> None:
+    try:
+        _FIRESTORE_COMMIT_RETRY(batch.commit)()
+    except DeadlineExceeded as exc:
+        log_error("firestore_batch_commit_deadline", label=label, error=str(exc))
+        raise
 
 
 def _doc_id(
@@ -195,6 +224,7 @@ class GcpFirestoreVectorStore:
                     f"Embedding has {len(emb)} dimensions; Firestore allows at most "
                     f"{FIRESTORE_MAX_EMBEDDING_DIM}. Set PLAYER_MEMORY_EMBEDDING_DIM=2048 and re-sync."
                 )
+        batch_size = max(1, _FIRESTORE_WRITE_BATCH_SIZE)
         for i, (text, ref, meta) in enumerate(texts_with_refs):
             doc_id = _doc_id(
                 workspace_id=workspace_id,
@@ -205,6 +235,7 @@ class GcpFirestoreVectorStore:
             )
             doc_ref = coll.document(doc_id)
             body = str(meta.get("chunk_text") or text)
+            slim_meta = _slim_chunk_metadata(meta)
             payload: dict[str, Any] = {
                 "workspace_id": workspace_id,
                 "context_scope": scope,
@@ -213,19 +244,19 @@ class GcpFirestoreVectorStore:
                 "source_ref": ref,
                 "content": body,
                 "content_hash": hashes[i],
-                "metadata": meta,
+                "metadata": slim_meta,
                 "embedding": Vector(list(embeddings[i])),
                 "created_at": datetime.now(UTC),
             }
             batch.set(doc_ref, payload)
             pending += 1
             written += 1
-            if pending >= 400:
-                batch.commit()
+            if pending >= batch_size:
+                _commit_write_batch(batch, label=f"insert_chunks:{player_key}")
                 batch = self.client.batch()
                 pending = 0
         if pending:
-            batch.commit()
+            _commit_write_batch(batch, label=f"insert_chunks:{player_key}:final")
         return written
 
     def search(
