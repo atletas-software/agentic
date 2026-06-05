@@ -153,6 +153,108 @@ class GcpFirestoreVectorStore:
         )
         return self._delete_matching(q)
 
+    def delete_shared_sheet_chunks_for_resync(self, *, workspace_id: int) -> int:
+        """
+        Remove Google Sheet–imported shared vectors only.
+        Keeps source_type=manual and shared_sheet chunks tagged admin_edit / admin_manual.
+        """
+        scope = CONTEXT_SCOPE_SHARED
+        protected_origins = frozenset({"admin_edit", "admin_manual"})
+        q = (
+            self._collection(scope)
+            .where(filter=FieldFilter("workspace_id", "==", workspace_id))
+            .where(filter=FieldFilter("source_type", "==", "shared_sheet"))
+        )
+        batch = self.client.batch()
+        pending = 0
+        deleted = 0
+        for snap in q.stream():
+            data = snap.to_dict() or {}
+            meta = data.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+            origin = str(meta.get("origin") or "google_sheet").strip().lower()
+            if origin in protected_origins or meta.get("preserve_on_sync") is True:
+                continue
+            batch.delete(snap.reference)
+            pending += 1
+            deleted += 1
+            if pending >= 400:
+                batch.commit()
+                batch = self.client.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+        return deleted
+
+    def delete_player_sql_sync_chunks_for_resync(
+        self,
+        *,
+        workspace_id: int,
+        player_key: str,
+    ) -> int:
+        """Remove SQL-synced personal vectors for one player; keep manual + admin-tagged sql_sync."""
+        scope = CONTEXT_SCOPE_PERSONAL
+        protected_origins = frozenset({"admin_edit", "admin_manual"})
+        q = (
+            self._collection(scope)
+            .where(filter=FieldFilter("workspace_id", "==", workspace_id))
+            .where(filter=FieldFilter("player_key", "==", player_key))
+            .where(filter=FieldFilter("source_type", "==", "sql_sync"))
+        )
+        batch = self.client.batch()
+        pending = 0
+        deleted = 0
+        for snap in q.stream():
+            data = snap.to_dict() or {}
+            meta = data.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+            origin = str(meta.get("origin") or "").strip().lower()
+            if origin in protected_origins or meta.get("preserve_on_sync") is True:
+                continue
+            batch.delete(snap.reference)
+            pending += 1
+            deleted += 1
+            if pending >= 400:
+                batch.commit()
+                batch = self.client.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+        return deleted
+
+    def delete_workspace_sql_sync_chunks_for_resync(self, *, workspace_id: int) -> int:
+        """Full personal SQL resync: drop sql_sync imports, keep manual chunks."""
+        scope = CONTEXT_SCOPE_PERSONAL
+        protected_origins = frozenset({"admin_edit", "admin_manual"})
+        q = (
+            self._collection(scope)
+            .where(filter=FieldFilter("workspace_id", "==", workspace_id))
+            .where(filter=FieldFilter("source_type", "==", "sql_sync"))
+        )
+        batch = self.client.batch()
+        pending = 0
+        deleted = 0
+        for snap in q.stream():
+            data = snap.to_dict() or {}
+            meta = data.get("metadata")
+            if not isinstance(meta, dict):
+                meta = {}
+            origin = str(meta.get("origin") or "").strip().lower()
+            if origin in protected_origins or meta.get("preserve_on_sync") is True:
+                continue
+            batch.delete(snap.reference)
+            pending += 1
+            deleted += 1
+            if pending >= 400:
+                batch.commit()
+                batch = self.client.batch()
+                pending = 0
+        if pending:
+            batch.commit()
+        return deleted
+
     def delete_player_source_type(
         self,
         *,
@@ -426,6 +528,7 @@ class GcpFirestoreVectorStore:
         context_scope: str,
         content: str,
         metadata: dict[str, Any] | None = None,
+        source_type: str | None = None,
     ) -> bool:
         scope = normalize_context_scope(context_scope)
         body = (content or "").strip()
@@ -449,14 +552,15 @@ class GcpFirestoreVectorStore:
             merged_meta["chunk_text"] = body
             new_hash = content_hash(body)
             new_emb = embed_texts([body])[0]
-            ref.update(
-                {
-                    "content": body,
-                    "content_hash": new_hash,
-                    "metadata": merged_meta,
-                    "embedding": Vector(list(new_emb)),
-                }
-            )
+            payload: dict[str, Any] = {
+                "content": body,
+                "content_hash": new_hash,
+                "metadata": merged_meta,
+                "embedding": Vector(list(new_emb)),
+            }
+            if source_type and str(source_type).strip():
+                payload["source_type"] = str(source_type).strip()
+            ref.update(payload)
             return True
         return False
 

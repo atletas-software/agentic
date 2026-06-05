@@ -18,6 +18,7 @@ from backendapi.services.player_context_document import (
 from backendapi.services.player_directory import upsert_player_directory_entry
 from backendapi.services.player_memory_service import (
     delete_chunks_for_player_source_type,
+    delete_player_sql_sync_chunks_for_resync,
     insert_chunks,
     list_chunks,
 )
@@ -147,12 +148,10 @@ def reindex_personal_vectors(
     player_key = str(pid)
     row_dict = document_to_sql_row_dict(document)
     structured = structured_chunks_from_player_row(row_dict)
-    delete_chunks_for_player_source_type(
+    delete_player_sql_sync_chunks_for_resync(
         db=db,
         workspace_id=workspace_id,
         player_key=player_key,
-        source_type="sql_sync",
-        context_scope=CONTEXT_SCOPE_PERSONAL,
     )
     if not structured:
         return 0

@@ -22,8 +22,8 @@ from backendapi.services.evaluation_text_clean import format_sql_cell_for_embedd
 from backendapi.services.player_directory import upsert_player_directory_entry
 from backendapi.services.player_key import player_key_column_names, row_dict_from_sql
 from backendapi.services.player_memory_service import (
-    delete_chunks_for_player_source_type,
-    delete_chunks_for_workspace_source_type,
+    delete_player_sql_sync_chunks_for_resync,
+    delete_workspace_sql_sync_chunks_for_resync,
     insert_chunks,
 )
 from backendapi.services.player_memory_settings import get_player_memory_settings, effective_player_context_sql
@@ -86,19 +86,15 @@ def _sync_structured_sql_rows(
     if sp:
         bind_used = {"player_user_id": int(sp["player_id"])}
         rid_str = str(int(sp["player_id"]))
-        deleted += delete_chunks_for_player_source_type(
+        deleted += delete_player_sql_sync_chunks_for_resync(
             db=db,
             workspace_id=workspace_id,
             player_key=rid_str,
-            source_type="sql_sync",
-            context_scope=CONTEXT_SCOPE_PERSONAL,
         )
     else:
-        deleted = delete_chunks_for_workspace_source_type(
+        deleted = delete_workspace_sql_sync_chunks_for_resync(
             db=db,
             workspace_id=workspace_id,
-            source_type="sql_sync",
-            context_scope=CONTEXT_SCOPE_PERSONAL,
         )
 
     for row in rows:
@@ -434,15 +430,14 @@ def sync_sql_context_for_workspace(
             }
         distinct_reviewees = {k[0] for k in group_docs if k[0] and k[0] != "0"}
         for rid_str in sorted(distinct_reviewees):
-            deleted += delete_chunks_for_player_source_type(
+            deleted += delete_player_sql_sync_chunks_for_resync(
                 db=db,
                 workspace_id=workspace_id,
                 player_key=rid_str,
-                source_type="sql_sync",
             )
     else:
-        deleted = delete_chunks_for_workspace_source_type(
-            db=db, workspace_id=workspace_id, source_type="sql_sync"
+        deleted = delete_workspace_sql_sync_chunks_for_resync(
+            db=db, workspace_id=workspace_id
         )
 
     written = 0

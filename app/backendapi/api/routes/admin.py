@@ -583,6 +583,7 @@ async def admin_update_memory_chunk(
         if any(record.values()):
             content = format_shared_context_embed_text(record)
 
+    # Promote edited chunks to manual so sheet/SQL resync does not overwrite admin edits.
     ok = update_chunk_by_id(
         db=db,
         workspace_id=ws.id,
@@ -590,6 +591,7 @@ async def admin_update_memory_chunk(
         context_scope=scope,
         content=content,
         metadata=meta_patch,
+        source_type="manual",
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Chunk not found")
@@ -638,8 +640,14 @@ async def admin_add_shared_context_manual(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = ensure_workspace(user_id="0", db=db)
-    ref = f"shared_manual:{body.label or 'note'}"
-    meta = {"origin": "admin_manual", "label": body.label, "context_scope": CONTEXT_SCOPE_SHARED}
+    slug = (body.label or "note").strip().replace(" ", "_")[:64]
+    ref = f"shared_manual:{slug}:{uuid.uuid4().hex[:10]}"
+    meta = {
+        "origin": "admin_manual",
+        "label": body.label,
+        "context_scope": CONTEXT_SCOPE_SHARED,
+        "preserve_on_sync": True,
+    }
     n = insert_chunks(
         db=db,
         workspace_id=ws.id,
@@ -660,7 +668,12 @@ async def admin_add_personal_context_manual(
     ws = ensure_workspace(user_id="0", db=db)
     slug = (body.label or "note").strip().replace(" ", "_")[:64]
     ref = f"manual:{slug}:{uuid.uuid4().hex[:10]}"
-    meta = {"origin": "admin_manual", "label": body.label, "context_scope": CONTEXT_SCOPE_PERSONAL}
+    meta = {
+        "origin": "admin_manual",
+        "label": body.label,
+        "context_scope": CONTEXT_SCOPE_PERSONAL,
+        "preserve_on_sync": True,
+    }
     n = insert_chunks(
         db=db,
         workspace_id=ws.id,

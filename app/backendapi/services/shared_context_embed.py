@@ -8,7 +8,7 @@ from backendapi.services.context_scope import CONTEXT_SCOPE_SHARED, SHARED_PLAYE
 from backendapi.core.logger import info as log_info
 from backendapi.services.player_memory_settings import get_player_memory_settings
 from backendapi.services.player_memory_service import (
-    delete_chunks_for_workspace_source_type,
+    delete_shared_sheet_chunks_for_resync,
     insert_chunks,
 )
 from backendapi.services.shared_context_schema import (
@@ -31,12 +31,8 @@ def sync_shared_context_from_sheet(*, db: Session, workspace_id: int) -> dict[st
     settings = get_player_memory_settings(db)
     max_tokens = int(settings.get("chunk_max_tokens") or 650)
 
-    deleted = delete_chunks_for_workspace_source_type(
-        db=db,
-        workspace_id=workspace_id,
-        source_type="shared_sheet",
-        context_scope=CONTEXT_SCOPE_SHARED,
-    )
+    # Only replace Google Sheet imports — manual notes and admin-edited chunks are kept.
+    deleted = delete_shared_sheet_chunks_for_resync(db=db, workspace_id=workspace_id)
 
     structured = structured_chunks_from_shared_records(records, max_tokens=max_tokens)
     if not structured:
@@ -83,5 +79,7 @@ def sync_shared_context_from_sheet(*, db: Session, workspace_id: int) -> dict[st
         "rows_processed": len(records),
         "parts_total": len(structured),
         "vector_format": SHARED_CONTEXT_VECTOR_FORMAT,
+        "manual_chunks_preserved": True,
+        "sync_scope": "shared_sheet_imports_only",
         "debug": debug,
     }

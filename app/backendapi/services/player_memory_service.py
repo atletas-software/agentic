@@ -72,6 +72,25 @@ def delete_chunks_for_workspace_source_type(
     )
 
 
+def delete_shared_sheet_chunks_for_resync(*, db: Session, workspace_id: int) -> int:
+    store = get_vector_store(db)
+    return store.delete_shared_sheet_chunks_for_resync(workspace_id=workspace_id)
+
+
+def delete_player_sql_sync_chunks_for_resync(
+    *, db: Session, workspace_id: int, player_key: str
+) -> int:
+    store = get_vector_store(db)
+    return store.delete_player_sql_sync_chunks_for_resync(
+        workspace_id=workspace_id, player_key=player_key
+    )
+
+
+def delete_workspace_sql_sync_chunks_for_resync(*, db: Session, workspace_id: int) -> int:
+    store = get_vector_store(db)
+    return store.delete_workspace_sql_sync_chunks_for_resync(workspace_id=workspace_id)
+
+
 def delete_chunks_for_player_source_type(
     *,
     db: Session,
@@ -218,6 +237,7 @@ def update_chunk_by_id(
     context_scope: str,
     content: str,
     metadata: dict[str, Any] | None = None,
+    source_type: str | None = None,
 ) -> bool:
     store = get_vector_store(db)
     return store.update_chunk_by_id(
@@ -226,6 +246,7 @@ def update_chunk_by_id(
         context_scope=context_scope,
         content=content,
         metadata=metadata,
+        source_type=source_type,
     )
 
 
