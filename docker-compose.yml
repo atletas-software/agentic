@@ -29,7 +29,6 @@ services:
       REDIS_URL: redis://redis:6379/0
       FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
-      GOOGLE_APPLICATION_CREDENTIALS: ""
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -44,7 +43,7 @@ services:
     command:
       - sh
       - -c
-      - exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
+      - unset GOOGLE_APPLICATION_CREDENTIALS; exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
       interval: 15s
@@ -59,7 +58,7 @@ services:
       context: .
       dockerfile: app/backendapi/Dockerfile
     container_name: athlete-agent-worker
-    command: ["python", "-m", "backendapi.workers.run_worker"]
+    command: ["sh", "-c", "unset GOOGLE_APPLICATION_CREDENTIALS; exec python -m backendapi.workers.run_worker"]
     env_file:
       - app/backendapi/.env
     environment:
@@ -67,7 +66,6 @@ services:
       REDIS_URL: redis://redis:6379/0
       FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
-      GOOGLE_APPLICATION_CREDENTIALS: ""
     volumes:
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:

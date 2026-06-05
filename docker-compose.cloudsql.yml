@@ -15,8 +15,6 @@ services:
   api:
     environment:
       DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
-      # Firestore uses VM ADC; Sheets use DESTINATION_GOOGLE_CREDENTIALS_FILE only.
-      GOOGLE_APPLICATION_CREDENTIALS: ""
     depends_on:
       cloud-sql-proxy:
         condition: service_started
@@ -25,7 +23,6 @@ services:
   worker:
     environment:
       DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
-      GOOGLE_APPLICATION_CREDENTIALS: ""
     depends_on:
       cloud-sql-proxy:
         condition: service_started

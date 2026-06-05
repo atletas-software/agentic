@@ -63,6 +63,24 @@ from backendapi.workers.workspace_worker import feedback_agent_poll_progress_hin
 router = APIRouter(prefix="/admin-api", tags=["admin"])
 
 
+def _firestore_admin_error_hint(exc: Exception) -> str:
+    msg = str(exc).lower()
+    if "file" in msg and "was not found" in msg:
+        return (
+            "Firestore auth misconfigured: empty GOOGLE_APPLICATION_CREDENTIALS breaks ADC. "
+            "On the VM, leave that var unset, redeploy api/worker, and grant the VM service account "
+            "roles/datastore.user on GCP_PROJECT_ID / GCP_FIRESTORE_DATABASE."
+        )
+    if "default credentials" in msg or "could not automatically determine credentials" in msg:
+        return (
+            "No GCP credentials: attach a service account to the VM with roles/datastore.user, "
+            "or set a valid GOOGLE_APPLICATION_CREDENTIALS path for local dev only."
+        )
+    return (
+        "Check GCP_PROJECT_ID, GCP_FIRESTORE_DATABASE, and VM service account Firestore access."
+    )
+
+
 class PlayerMemorySettingsUpdateBody(BaseModel):
     vector_backend: str = Field(default="firestore")
     gcp_project_id: str = ""
@@ -528,6 +546,7 @@ async def admin_list_memory_chunks(
         return {
             "ok": False,
             "reason": str(exc),
+            "hint": _firestore_admin_error_hint(exc),
             "chunks": [],
             "total": 0,
             "limit": limit,
@@ -602,7 +621,14 @@ async def admin_sync_shared_context_sheet(
     db: Session = Depends(get_db),
 ) -> dict:
     ws = ensure_workspace(user_id="0", db=db)
-    return sync_shared_context_from_sheet(db=db, workspace_id=ws.id)
+    try:
+        return sync_shared_context_from_sheet(db=db, workspace_id=ws.id)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "hint": _firestore_admin_error_hint(exc),
+        }
 
 
 @router.post("/player-memory/shared/manual")
@@ -659,10 +685,7 @@ async def admin_player_memory_stats(
             "ok": False,
             "backend": "firestore",
             "reason": str(exc),
-            "hint": (
-                "Set GCP_PROJECT_ID and GCP_FIRESTORE_DATABASE, then authenticate with "
-                "gcloud auth application-default login or a valid GOOGLE_APPLICATION_CREDENTIALS path."
-            ),
+            "hint": _firestore_admin_error_hint(exc),
             "total_chunks": 0,
             "collections": {},
         }
@@ -680,7 +703,13 @@ async def admin_list_personal_player_keys(
         players = list_personal_player_keys(db=db, workspace_id=ws.id, search=q.strip())
         return {"ok": True, "players": players, "total": len(players)}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "reason": str(exc), "players": [], "total": 0}
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "hint": _firestore_admin_error_hint(exc),
+            "players": [],
+            "total": 0,
+        }
 
 
 class PersonalPlayerLabelBody(BaseModel):

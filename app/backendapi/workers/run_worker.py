@@ -8,7 +8,10 @@ from backendapi.core.env_loader import ensure_env_loaded
 
 ensure_env_loaded()
 
+from backendapi.core.startup import prepare_gcp_firestore_adc
 from backendapi.services.sync_queue import SYNC_QUEUE_NAME, WORKSPACE_QUEUE_NAME, get_redis
+
+prepare_gcp_firestore_adc()
 
 
 def main() -> None:
