@@ -13,7 +13,7 @@ from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from agents.feedback.openai_service import analyze_manual_moment, generate_text_coaching_review
@@ -486,6 +486,10 @@ async def cancel_review_background(review_id: str) -> JSONResponse:
 async def review_page(request: Request, review_id: str) -> HTMLResponse:
     review = load_json(_review_path(review_id))
     if not review:
+        job = _load_job(review_id)
+        st = str((job or {}).get("status") or "").lower()
+        if job and st not in ("completed", "failed"):
+            return RedirectResponse(url=f"/jobs/{review_id}", status_code=302)
         raise HTTPException(status_code=404)
     review = _normalize_review(review)
     calibration = load_json(_calibration_path(review_id))
