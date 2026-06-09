@@ -39,6 +39,23 @@ def check_yolo_runtime() -> dict[str, Any]:
     except ImportError:
         out["errors"].append("ultralytics not installed")
 
+    out["highlight_weights_env"] = (os.getenv("YOLO_HIGHLIGHT_WEIGHTS") or "").strip() or None
+    candidates = [
+        out["highlight_weights_env"],
+        "/app/agents/feedback/models/highlight_yolo_v1.pt",
+        "/run/models/highlight_yolo_v1.pt",
+        str(root / "yolo_model" / "artifacts" / "train" / "highlight_v1.1.0" / "weights" / "best.pt"),
+    ]
+    seen: set[str] = set()
+    checked: list[dict[str, Any]] = []
+    for raw in candidates:
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        p = Path(raw)
+        checked.append({"path": str(p), "exists": p.is_file(), "size_bytes": p.stat().st_size if p.is_file() else 0})
+    out["highlight_weights_checked"] = checked
+
     try:
         from yolo_model.pipeline.runner import resolve_highlight_weights
 
@@ -49,6 +66,14 @@ def check_yolo_runtime() -> dict[str, Any]:
             out["errors"].append(f"highlight weights missing: {wp}")
     except Exception as exc:  # noqa: BLE001
         out["errors"].append(f"highlight weights: {exc}")
+        for row in checked:
+            if row.get("exists"):
+                out["highlight_weights_path"] = row["path"]
+                out["highlight_weights_ok"] = True
+                out["errors"].append(
+                    "resolve_highlight_weights failed but a weights file exists on disk — check YOLO_HIGHLIGHT_WEIGHTS env"
+                )
+                break
 
     out["ready_for_pose_pipeline"] = (
         out["torch_available"]

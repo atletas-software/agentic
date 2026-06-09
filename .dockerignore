@@ -27,14 +27,22 @@ app.db
 !app/agents/feedback/models/README.md
 !model-weights/README.md
 
-# Large ML artifacts — mount at runtime (model-weights/) or bake only for feedback-agent COPY
-**/*.pt
-!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
-model-weights/**
-!model-weights/README.md
-!model-weights/.gitkeep
-app/yolo_model/artifacts/**
+# YOLO datasets / large dirs (keep shipped best.pt — see exceptions at end)
 app/yolo_model/datasets/**
 app/yolo_model/data/**
 app/yolo_model/exports/**
 app/yolo_model/fixtures/**
+model-weights/**
+!model-weights/README.md
+!model-weights/.gitkeep
+
+# All other artifacts except the committed highlight weights file
+app/yolo_model/artifacts/**
+!app/yolo_model/artifacts/train/
+!app/yolo_model/artifacts/train/highlight_v1.1.0/
+!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/
+!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
+
+# Other .pt files stay excluded
+**/*.pt
+!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt

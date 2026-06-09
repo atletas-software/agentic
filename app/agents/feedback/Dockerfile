@@ -12,7 +12,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install torch+torchvision (CPU) first, then app deps without opencv-python duplicate.
-# ultralytics is installed --no-deps to avoid pulling opencv-python (~70MB) on top of headless.
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
         "torch==2.4.1" "torchvision==0.19.1" \
     && pip install --no-cache-dir \
@@ -24,12 +23,13 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 
 COPY app/agents /app/agents
 COPY app/yolo_model /app/yolo_model
-RUN mkdir -p /app/agents/feedback/models /app/yolo_model/artifacts/pose \
-    && if [ -f /app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt ]; then \
-         cp /app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt \
-            /app/agents/feedback/models/highlight_yolo_v1.pt; \
-       fi
+# Explicit copy so build fails loudly if best.pt missing from context (expect ~6MB in build log).
+COPY app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt \
+    /app/agents/feedback/models/highlight_yolo_v1.pt
+RUN mkdir -p /app/yolo_model/artifacts/pose \
+    && ls -lh /app/agents/feedback/models/highlight_yolo_v1.pt
 
+ENV YOLO_HIGHLIGHT_WEIGHTS=/app/agents/feedback/models/highlight_yolo_v1.pt
 ENV HOST=0.0.0.0
 ENV PORT=5055
 ENV DATA_DIR=/app/data
