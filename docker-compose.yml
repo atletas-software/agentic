@@ -92,7 +92,8 @@ services:
       PYTHONPATH: /app
       YOLO_POSE_DEVICE: cpu
       YOLO_POSE_WEIGHTS: yolov8n-pose.pt
-      YOLO_HIGHLIGHT_WEIGHTS: /run/models/highlight_yolo_v1.pt
+      # Baked in image at agents/feedback/models/; override via model-weights/ mount if needed.
+      YOLO_HIGHLIGHT_WEIGHTS: ${YOLO_HIGHLIGHT_WEIGHTS:-/app/agents/feedback/models/highlight_yolo_v1.pt}
       POSE_PIPELINE_OUTPUT_DIR: /app/data/pose
     ports:
       - "${FEEDBACK_AGENT_PORT:-5055}:5055"

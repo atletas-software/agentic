@@ -29,6 +29,7 @@ app.db
 
 # Large ML artifacts — mount at runtime (model-weights/) or bake only for feedback-agent COPY
 **/*.pt
+!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
 model-weights/**
 !model-weights/README.md
 !model-weights/.gitkeep

@@ -8,15 +8,27 @@ model-weights/highlight_yolo_v1.pt
 
 This path is mounted read-only into the container as `/run/models/highlight_yolo_v1.pt`.
 
-## Setup on the VM
+## Source weights in this repo (committed to git)
 
-1. Copy your trained `best.pt` from training (or ask whoever ran `yolo_model/scripts/train.py`):
+Trained highlight weights are versioned at:
+
+```text
+app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
+```
+
+After `git pull` on the VM, rebuild **feedback-agent** so the image bakes this file to
+`/app/agents/feedback/models/highlight_yolo_v1.pt`.
+
+## Setup on the VM (if not baked into the image)
+
+1. Copy `best.pt` from your laptop (repo path above) **or** promote to `model-weights/`:
 
 ```bash
 cd /var/www/html/agentic
 mkdir -p model-weights
-# from your laptop (example):
-# scp best.pt user@VM:/var/www/html/agentic/model-weights/highlight_yolo_v1.pt
+# From your Mac (replace VM host):
+# scp app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt \
+#   root@YOUR_VM:/var/www/html/agentic/model-weights/highlight_yolo_v1.pt
 ```
 
 2. Verify the file exists:

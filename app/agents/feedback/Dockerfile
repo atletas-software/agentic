@@ -24,7 +24,11 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 
 COPY app/agents /app/agents
 COPY app/yolo_model /app/yolo_model
-RUN mkdir -p /app/agents/feedback/models /app/yolo_model/artifacts/pose
+RUN mkdir -p /app/agents/feedback/models /app/yolo_model/artifacts/pose \
+    && if [ -f /app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt ]; then \
+         cp /app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt \
+            /app/agents/feedback/models/highlight_yolo_v1.pt; \
+       fi
 
 ENV HOST=0.0.0.0
 ENV PORT=5055

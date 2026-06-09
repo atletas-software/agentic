@@ -36,7 +36,12 @@ docker-compose.override.yml
 # Ultralytics may still write here if --project is relative; prefer app/yolo_model/artifacts/
 /runs/
 
-app/yolo_model/artifacts/*
+app/yolo_model/artifacts/**
 !app/yolo_model/artifacts/README.md
+# Shipped highlight detector (~6MB) so VMs can pull without manual scp
+!app/yolo_model/artifacts/train/
+!app/yolo_model/artifacts/train/highlight_v1.1.0/
+!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/
+!app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
 app/agents/feedback/data/
 /tmp/pose_pipeline/
