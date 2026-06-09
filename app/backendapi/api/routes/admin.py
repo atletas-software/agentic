@@ -1379,16 +1379,22 @@ async def admin_user_raw_logs(
 
 
 class AdminAgentsFeedbackReviewBody(BaseModel):
-    user_id: str = Field(..., min_length=1)
-    video_url: str = Field(default="", max_length=8000)
+    player_key: str = Field(..., min_length=1, max_length=128)
+    video_url: str = Field(..., min_length=1, max_length=8000)
+    coaching_prompt: str = Field(default="", max_length=4000)
+    # Legacy / optional — workspace always uses admin player-memory tenant (user_id=0)
+    user_id: str = ""
     text_only: bool = Field(default=False)
     player_focus: str = ""
     sport: str = "Soccer"
     analysis_scope: str = ""
     coaching_focus: str = ""
-    player_key: str = ""
     first_name: str = ""
     last_name: str = ""
+
+
+class AdminAgentsEmbedFeedbackBody(BaseModel):
+    player_key: str = Field(default="", max_length=128)
 
 
 class AdminAgentsUserIdBody(BaseModel):
@@ -1416,6 +1422,45 @@ def _admin_require_user(db: Session, user_id: str) -> UserAccount:
     if user is None:
         raise HTTPException(status_code=404, detail="User not found.")
     return user
+
+
+def _agents_lab_admin_workspace(db: Session) -> Workspace:
+    return ensure_workspace(user_id="0", db=db)
+
+
+def _player_display_name_for_key(db: Session, workspace_id: int, player_key: str) -> str:
+    pk = player_key.strip()
+    for row in list_personal_player_keys(db=db, workspace_id=workspace_id, search=pk):
+        if str(row.get("player_key") or "") == pk:
+            name = str(row.get("display_name") or "").strip()
+            return name or pk
+    return pk
+
+
+def _feedback_review_job_payload(body: AdminAgentsFeedbackReviewBody, *, db: Session, workspace_id: int) -> dict[str, Any]:
+    pk = body.player_key.strip()
+    coaching = (body.coaching_prompt or body.coaching_focus or "").strip()
+    focus = (body.player_focus or "").strip() or _player_display_name_for_key(db, workspace_id, pk)
+    return {
+        "video_url": body.video_url.strip(),
+        "text_only": bool(body.text_only),
+        "player_focus": focus,
+        "sport": (body.sport or "Soccer").strip(),
+        "analysis_scope": (body.analysis_scope or "").strip(),
+        "coaching_focus": coaching,
+        "coaching_prompt": coaching,
+        "player_key": pk,
+        "first_name": (body.first_name or "").strip(),
+        "last_name": (body.last_name or "").strip(),
+    }
+
+
+def _get_agents_lab_feedback_job(db: Session, job_id: int) -> AgentJob:
+    ws = _agents_lab_admin_workspace(db)
+    job = db.get(AgentJob, job_id)
+    if job is None or job.workspace_id != ws.id:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
 
 
 def _infer_user_id_for_destination_tab(db: Session, sheet_title: str) -> str | None:
@@ -1692,31 +1737,53 @@ async def agents_lab_workspace_refresh(
     return {"success": True, "queued": True}
 
 
+@router.get("/agents-lab/feedback-jobs")
+async def agents_lab_feedback_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Recent feedback/video agent jobs for the admin player-memory workspace (no user picker)."""
+    ws = _agents_lab_admin_workspace(db)
+    jobs = (
+        db.query(AgentJob)
+        .filter(AgentJob.workspace_id == ws.id)
+        .order_by(AgentJob.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "workspace_id": ws.id,
+        "agent_jobs": [
+            {
+                "id": j.id,
+                "agent_type": j.agent_type,
+                "status": j.status,
+                "external_ref": j.external_ref,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+                "error_message": j.error_message,
+                "progress_hint": feedback_agent_poll_progress_hint(j.result_json),
+                "player_key": (json.loads(j.payload_json or "{}").get("player_key") if j.payload_json else None),
+            }
+            for j in jobs
+        ],
+    }
+
+
 @router.post("/agents-lab/feedback-reviews")
 async def agents_lab_create_feedback_review(
     body: AdminAgentsFeedbackReviewBody,
     _admin: dict = Depends(get_admin_session_context),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    uid = body.user_id.strip()
-    _admin_require_user(db, uid)
-    ws = ensure_workspace(user_id=uid, db=db)
+    ws = _agents_lab_admin_workspace(db)
     job = AgentJob(
         workspace_id=ws.id,
         agent_type="FEEDBACK_DELEGATE",
         status="PENDING",
         payload_json=json.dumps(
-            {
-                "video_url": body.video_url.strip(),
-                "text_only": bool(body.text_only),
-                "player_focus": (body.player_focus or "").strip(),
-                "sport": (body.sport or "Soccer").strip(),
-                "analysis_scope": (body.analysis_scope or "").strip(),
-                "coaching_focus": (body.coaching_focus or "").strip(),
-                "player_key": (body.player_key or "").strip(),
-                "first_name": (body.first_name or "").strip(),
-                "last_name": (body.last_name or "").strip(),
-            },
+            _feedback_review_job_payload(body, db=db, workspace_id=ws.id),
             ensure_ascii=True,
         ),
         created_at=datetime.now(UTC),
@@ -1742,13 +1809,9 @@ async def agents_lab_video_process(
     _admin: dict = Depends(get_admin_session_context),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """YOLO pose only, then chain FEEDBACK_DELEGATE (same fields as feedback-reviews)."""
-    uid = body.user_id.strip()
-    _admin_require_user(db, uid)
-    if not (body.video_url or "").strip():
-        raise HTTPException(status_code=400, detail="video_url is required")
-    ws = ensure_workspace(user_id=uid, db=db)
-    payload = body.model_dump()
+    """YOLO pose only, then chain FEEDBACK_DELEGATE."""
+    ws = _agents_lab_admin_workspace(db)
+    payload = _feedback_review_job_payload(body, db=db, workspace_id=ws.id)
     payload["chain_feedback"] = True
     job = AgentJob(
         workspace_id=ws.id,
@@ -1768,6 +1831,89 @@ async def agents_lab_video_process(
         db.commit()
         raise HTTPException(status_code=503, detail="Could not enqueue video job.")
     return {"success": True, "agent_job_id": job.id}
+
+
+@router.post("/agents-lab/feedback-jobs/{job_id}/cancel")
+async def agents_lab_cancel_feedback_job(
+    job_id: int,
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Stop a PENDING or RUNNING feedback job (admin workspace, no user_id)."""
+    from rq.job import Job
+
+    job = _get_agents_lab_feedback_job(db, job_id)
+    st = (job.status or "").upper()
+    if st in ("SUCCESS", "FAILED", "SKIPPED"):
+        return {"ok": False, "reason": "job_already_finished", "status": job.status}
+
+    merge_agent_job_result_json(
+        job,
+        {"cancel_requested_at": datetime.now(UTC).isoformat(), "cancel_requested": True},
+    )
+    set_agent_job_cancel_requested(job_id)
+
+    review_id = (job.external_ref or "").strip()
+    if not review_id and job.result_json:
+        try:
+            meta = json.loads(job.result_json)
+            poll = meta.get("feedback_agent_poll")
+            if isinstance(poll, dict):
+                review_id = str(poll.get("review_id") or "").strip()
+        except json.JSONDecodeError:
+            review_id = ""
+    if review_id:
+        request_feedback_agent_cancel(review_id)
+
+    rq_job_id: str | None = None
+    if job.result_json:
+        try:
+            rq_job_id = str(json.loads(job.result_json).get("rq_job_id") or "").strip() or None
+        except json.JSONDecodeError:
+            rq_job_id = None
+    if rq_job_id and st == "PENDING":
+        try:
+            rj = Job.fetch(rq_job_id, connection=get_redis())
+            rj_status = str(rj.get_status()).lower()
+            if rj_status in ("queued", "scheduled", "deferred"):
+                rj.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if st == "PENDING":
+        job.status = "FAILED"
+        job.error_message = "Cancelled by user (stopped before worker started)."
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": True, "stopped": "pending"}
+
+    db.commit()
+    return {"ok": True, "stopped": "running", "review_id": review_id or None}
+
+
+@router.post("/agents-lab/feedback-jobs/{job_id}/embed-to-player-memory")
+async def agents_lab_embed_feedback_to_memory(
+    job_id: int,
+    body: AdminAgentsEmbedFeedbackBody,
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually save a completed feedback review into the selected player's personal vector memory."""
+    from backendapi.services.feedback_review_embed import embed_feedback_review_for_agent_job
+
+    job = _get_agents_lab_feedback_job(db, job_id)
+    pk = (body.player_key or "").strip() or None
+    result = embed_feedback_review_for_agent_job(db=db, job=job, player_key=pk)
+    if not result.get("ok"):
+        err = str(result.get("error") or "embed_failed")
+        if err == "job_not_success":
+            raise HTTPException(status_code=400, detail="Job must complete successfully before saving to memory.")
+        if err == "no_player_key":
+            raise HTTPException(status_code=400, detail="player_key is required.")
+        if err == "no_feedback_agent":
+            raise HTTPException(status_code=503, detail="FEEDBACK_AGENT_BASE_URL is not configured.")
+        raise HTTPException(status_code=400, detail=err)
+    return {"success": True, **result}
 
 
 @router.post("/agents-lab/video-process-stub")

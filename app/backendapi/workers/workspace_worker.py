@@ -14,20 +14,18 @@ from backendapi.core.logger import error, info
 from backendapi.db import SessionLocal
 from backendapi.models.workspace import AgentJob
 from backendapi.services.agent_job_cancel import agent_job_cancel_requested, clear_agent_job_cancel_requested
-from backendapi.services.feedback_memory import retrieve_player_memory_context
+from backendapi.services.feedback_memory import retrieve_feedback_context
 from backendapi.services.feedback_public_url import (
     feedback_public_review_url,
     feedback_public_status_url,
     feedback_public_watch_url,
 )
 from backendapi.services.sheet_sync import SYNC_DESTINATION_HEADERS
-from backendapi.services.shared_feedback_context_sheet import fetch_shared_feedback_context_text
 from backendapi.services.player_directory import resolve_player_key_by_name
 from backendapi.services.pose_video_pipeline import pose_pipeline_enabled, run_pose_pipeline_for_job
 from backendapi.services.workspace_enqueue import (
     enqueue_destination_snapshot_embed_job,
     enqueue_feedback_delegate_job,
-    enqueue_feedback_review_embed_job,
 )
 from backendapi.services.workspace_service import (
     append_destination_snapshot_if_changed,
@@ -204,6 +202,11 @@ def process_workspace_context_job(user_id: str) -> dict[str, str | bool]:
         db.close()
 
 
+def _admin_memory_workspace_id(db) -> int:
+    """Player memory and Agent Lab feedback jobs use the system admin workspace (user_id=0)."""
+    return ensure_workspace(user_id="0", db=db).id
+
+
 def _build_feedback_delegate_body(
     db,
     job: AgentJob,
@@ -214,6 +217,7 @@ def _build_feedback_delegate_body(
     scope = _strip_sync_destination_kv_lines_from_scope(scope_raw)
     text_only = bool(payload.get("text_only"))
     video_url = (payload.get("video_url") or "").strip()
+    coaching = str(payload.get("coaching_prompt") or payload.get("coaching_focus") or "").strip()
 
     body: dict[str, Any] = {
         "text_only": text_only,
@@ -221,17 +225,13 @@ def _build_feedback_delegate_body(
         "player_focus": (payload.get("player_focus") or "").strip(),
         "sport": (payload.get("sport") or "Soccer").strip(),
         "analysis_scope": scope,
-        "coaching_focus": (payload.get("coaching_focus") or "").strip(),
+        "coaching_focus": coaching,
+        "coaching_prompt": coaching,
         "first_name": str(payload.get("first_name") or "").strip(),
         "last_name": str(payload.get("last_name") or "").strip(),
     }
 
-    shared, shared_sheet_debug = fetch_shared_feedback_context_text(
-        max_chars=int(os.getenv("FEEDBACK_SHARED_CONTEXT_MAX_CHARS", "14000")),
-    )
-    if shared:
-        body["shared_context"] = shared
-    body["shared_context_sheet_debug"] = shared_sheet_debug
+    memory_workspace_id = _admin_memory_workspace_id(db)
 
     pk = (payload.get("player_key") or "").strip()
     if not pk:
@@ -240,7 +240,7 @@ def _build_feedback_delegate_body(
         if first_name or last_name:
             resolved = resolve_player_key_by_name(
                 db=db,
-                workspace_id=job.workspace_id,
+                workspace_id=memory_workspace_id,
                 first_name=first_name,
                 last_name=last_name,
             )
@@ -248,16 +248,21 @@ def _build_feedback_delegate_body(
                 pk = resolved
 
     mem_debug: dict[str, Any] = {"outcome": "skipped_no_player_key"}
+    shared_debug: dict[str, Any] = {"outcome": "skipped_no_player_key"}
     if pk:
-        mem, mem_debug = retrieve_player_memory_context(
+        personal, shared, mem_debug = retrieve_feedback_context(
             db=db,
-            workspace_id=job.workspace_id,
+            workspace_id=memory_workspace_id,
             player_key=pk,
             payload=payload,
         )
-        if mem:
-            body["player_memory_context"] = mem
+        if personal:
+            body["player_memory_context"] = personal
+        if shared:
+            body["shared_context"] = shared
+        shared_debug = {**mem_debug, "shared_context_attached": bool(shared)}
     body["player_memory_retrieval_debug"] = mem_debug
+    body["shared_context_retrieval_debug"] = shared_debug
 
     pose_path = (payload.get("pose_json_path") or "").strip()
     use_pose = bool(pose_path) or (
@@ -272,8 +277,9 @@ def _build_feedback_delegate_body(
             body["pose_json_path"] = pose_path
 
     meta = {
-        "shared_context_attached": bool(shared),
+        "shared_context_attached": bool(body.get("shared_context")),
         "player_memory_attached": bool(body.get("player_memory_context")),
+        "memory_workspace_id": memory_workspace_id,
         "use_pose_pipeline": use_pose,
         "pose_json_path": pose_path or None,
     }
@@ -582,7 +588,6 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
         job.completed_at = datetime.now(UTC)
         db.commit()
         info("feedback_delegate_complete", agent_job_id=agent_job_id, external_ref=job.external_ref)
-        enqueue_feedback_review_embed_job(agent_job_id)
         return {"ok": True, "delegated": True, "review_id": job.external_ref}
     except Exception as exc:  # noqa: BLE001
         err = str(exc)

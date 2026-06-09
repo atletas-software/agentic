@@ -22,25 +22,26 @@ from backendapi.services.vector_store import get_vector_store
 
 
 def build_feedback_query_text(payload: dict[str, Any]) -> str:
+    coaching = str(payload.get("coaching_prompt") or payload.get("coaching_focus") or "").strip()
     parts = [
         str(payload.get("player_focus") or "").strip(),
-        str(payload.get("coaching_focus") or "").strip(),
+        coaching,
         str(payload.get("analysis_scope") or "").strip(),
         str(payload.get("sport") or "").strip(),
     ]
     return "\n".join(p for p in parts if p)
 
 
-def retrieve_player_memory_context(
+def retrieve_feedback_context(
     *,
     db: Session,
     workspace_id: int,
     player_key: str,
     payload: dict[str, Any],
-) -> tuple[str | None, dict[str, Any]]:
+) -> tuple[str | None, str | None, dict[str, Any]]:
     """
-    Returns (formatted_context_or_none, debug_dict_for_review_ui).
-    Merges personal player vectors + global shared context vectors.
+    Returns (personal_context, shared_context, debug_dict).
+    Personal and shared Firestore vectors are retrieved separately for distinct prompt sections.
     """
     settings = get_player_memory_settings(db)
     backend = str(settings.get("vector_backend") or "firestore").strip().lower()
@@ -58,13 +59,16 @@ def retrieve_player_memory_context(
         "embedding_dimensions": embedding_dimensions(),
         "top_k_personal": top_k,
         "top_k_shared": shared_top_k,
-        "query_text_built_from": "player_focus, coaching_focus, analysis_scope, sport (non-empty lines concatenated)",
+        "query_text_built_from": (
+            "player_focus, coaching_prompt/coaching_focus, analysis_scope, sport (non-empty lines concatenated)"
+        ),
+        "retrieval_source": "firestore_vectors",
         "retrieval_steps": [
             "Build query text from job fields.",
             "Embed query with PLAYER_MEMORY_EMBEDDING_MODEL.",
             "Search personal context collection (scoped to player).",
-            "Search shared context collection (global).",
-            "Format both blocks for the LLM user message.",
+            "Search shared context collection (global, synced sheet data).",
+            "Format personal and shared blocks separately for the LLM.",
         ],
     }
     try:
@@ -72,7 +76,7 @@ def retrieve_player_memory_context(
     except Exception as exc:  # noqa: BLE001
         debug["outcome"] = "vector_store_unavailable"
         debug["error"] = str(exc)
-        return None, debug
+        return None, None, debug
 
     qtext = build_feedback_query_text(payload)
     if not qtext.strip():
@@ -83,7 +87,7 @@ def retrieve_player_memory_context(
     except Exception as exc:  # noqa: BLE001
         debug["outcome"] = "embedding_failed"
         debug["error"] = str(exc)
-        return None, debug
+        return None, None, debug
     debug["embedding_vector_length"] = len(qemb) if qemb else 0
 
     personal_chunks: list[dict[str, Any]] = []
@@ -127,15 +131,35 @@ def retrieve_player_memory_context(
     debug["personal_chunks_returned"] = len(personal_chunks)
     debug["shared_chunks_returned"] = len(shared_chunks)
 
-    if not personal_chunks and not shared_chunks:
-        debug["outcome"] = "no_matches"
-        return None, debug
+    personal_text = format_retrieval_context(personal_chunks) if personal_chunks else None
+    shared_text = format_shared_retrieval_context(shared_chunks) if shared_chunks else None
 
-    blocks: list[str] = []
-    if shared_chunks:
-        blocks.append(format_shared_retrieval_context(shared_chunks))
-    if personal_chunks:
-        blocks.append(format_retrieval_context(personal_chunks))
+    if not personal_text and not shared_text:
+        debug["outcome"] = "no_matches"
+        return None, None, debug
 
     debug["outcome"] = "success"
+    return personal_text, shared_text, debug
+
+
+def retrieve_player_memory_context(
+    *,
+    db: Session,
+    workspace_id: int,
+    player_key: str,
+    payload: dict[str, Any],
+) -> tuple[str | None, dict[str, Any]]:
+    """
+    Returns (formatted_context_or_none, debug_dict_for_review_ui).
+    Merges personal player vectors + global shared context vectors (legacy combined format).
+    """
+    personal, shared, debug = retrieve_feedback_context(
+        db=db,
+        workspace_id=workspace_id,
+        player_key=player_key,
+        payload=payload,
+    )
+    if not personal and not shared:
+        return None, debug
+    blocks = [b for b in (shared, personal) if b]
     return "\n\n".join(blocks).strip(), debug

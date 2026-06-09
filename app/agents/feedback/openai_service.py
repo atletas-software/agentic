@@ -221,6 +221,9 @@ def vision_analyze_circle_segment(
     segment_index: int,
     segment_total: int,
     pose_context: str | None = None,
+    coaching_focus: str | None = None,
+    player_memory_context: str | None = None,
+    shared_context: str | None = None,
 ) -> tuple[CircleSegmentVisionOutput, dict[str, Any]]:
     """Single vision parse for one episode: stills cover pre-circle, visible span, and post-circle."""
     debug: dict[str, Any] = {
@@ -259,6 +262,34 @@ def vision_analyze_circle_segment(
         "3) Write coaching_note as 2–5 tight sentences: what to keep doing, what to adjust, and the next read — grounded only in what the stills support.",
         "If the target player is unclear, stay conservative and avoid invented actions.",
     ]
+    cf = (coaching_focus or "").strip()
+    if cf:
+        user_lines.extend(
+            [
+                "",
+                "--- SESSION COACHING PRIORITIES (admin) ---",
+                "Prioritize these themes when supported by visible evidence; do not invent actions to satisfy them.",
+                cf[:3000],
+            ]
+        )
+    org = (shared_context or "").strip()
+    if org:
+        user_lines.extend(
+            [
+                "",
+                "--- SHARED CLUB RUBRIC (reference vocabulary; align language, not facts) ---",
+                org[:4000],
+            ]
+        )
+    mem = (player_memory_context or "").strip()
+    if mem:
+        user_lines.extend(
+            [
+                "",
+                "--- PLAYER MEMORY (continuity; do not contradict what you see in the frames) ---",
+                mem[:4000],
+            ]
+        )
     pose_block = (pose_context or "").strip()
     if pose_block:
         user_lines.extend(
@@ -336,6 +367,7 @@ def synthesize_overall_from_circle_segments(
         f"Video duration (seconds): {duration_sec:.2f}",
         f"Analysis scope: {analysis_scope or 'Full clip.'}",
         f"Coaching focus requested: {coaching_focus or 'Balanced technical and tactical feedback.'}",
+        "Session direction applies only when supported by episode evidence; do not invent observations.",
         "",
         "--- EPISODES (structured; one red-circle visibility span per block) ---",
         segments_markdown[:80_000],

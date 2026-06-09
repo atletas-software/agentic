@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import json
-import os
-import time
-
-import httpx
-
 from backendapi.core.logger import error, info
 from backendapi.db import SessionLocal
 from backendapi.models.workspace import AgentJob
-from backendapi.services.feedback_review_embed import embed_completed_feedback_review
+from backendapi.services.feedback_review_embed import embed_feedback_review_for_agent_job
 from backendapi.services.snapshot_embed import embed_destination_snapshot_changes
 from backendapi.services.sql_player_sync import sync_sql_context_for_workspace
 
@@ -83,48 +77,14 @@ def process_feedback_review_embed_job(agent_job_id: int) -> dict[str, object]:
         job = db.get(AgentJob, agent_job_id)
         if job is None:
             return {"ok": False, "error": "job_not_found"}
-        if job.status != "SUCCESS":
-            return {"ok": False, "skipped": True, "reason": "job_not_success"}
-        payload = json.loads(job.payload_json or "{}")
-        player_key = str(payload.get("player_key") or "").strip()
-        if not player_key:
-            return {"ok": False, "skipped": True, "reason": "no_player_key"}
-        review_id = str(job.external_ref or "").strip()
-        if not review_id:
-            return {"ok": False, "skipped": True, "reason": "no_review_id"}
-
-        base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").rstrip("/")
-        if not base:
-            return {"ok": False, "skipped": True, "reason": "no_feedback_agent"}
-
-        timeout = float(os.getenv("FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS", "30"))
-        review: dict | None = None
-        last_status = 0
-        for attempt in range(5):
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.get(f"{base}/api/reviews/{review_id}")
-            last_status = resp.status_code
-            if resp.status_code == 404 and attempt < 4:
-                time.sleep(2.0)
-                continue
-            if resp.status_code >= 400:
-                return {"ok": False, "error": f"fetch_review_http_{resp.status_code}"}
-            review = resp.json()
-            break
-        if review is None:
-            return {"ok": False, "error": f"fetch_review_http_{last_status}"}
-        if review.get("error"):
-            return {"ok": False, "error": "review_response_error"}
-
-        n = embed_completed_feedback_review(
-            db=db,
-            workspace_id=job.workspace_id,
-            player_key=player_key,
-            review=review,
-            review_id=review_id,
-        )
-        info("feedback_review_embed_done", agent_job_id=agent_job_id, chunks=n)
-        return {"ok": True, "chunks_written": n}
+        result = embed_feedback_review_for_agent_job(db=db, job=job)
+        if result.get("ok"):
+            info(
+                "feedback_review_embed_done",
+                agent_job_id=agent_job_id,
+                chunks=result.get("chunks_written"),
+            )
+        return result
     except Exception as exc:  # noqa: BLE001
         error("feedback_review_embed_failed", agent_job_id=agent_job_id, error=str(exc))
         raise

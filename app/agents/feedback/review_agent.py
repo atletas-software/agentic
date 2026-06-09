@@ -195,6 +195,9 @@ def _try_yolo_segment_review(
             player_focus=player_focus,
             segment_index=idx,
             segment_total=total,
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
         )
         vdbg["event_index"] = idx
         vdbg["mean_conf"] = round(ev.mean_conf, 4)
@@ -524,6 +527,9 @@ def _try_circle_segment_episode_review(
             player_focus=player_focus,
             segment_index=idx,
             segment_total=len(segments),
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
         )
         vdbg["probe_count_in_run"] = n_probes
         vision_debug.append(vdbg)
@@ -798,6 +804,9 @@ def build_review_from_pose_json(
             segment_index=idx,
             segment_total=total,
             pose_context=format_pose_context_for_agent(ev),
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
         )
         vdbg["pose_summary_status"] = ev.get("summary_status")
         vdbg["pose_frames_used"] = ev.get("frames_used")
