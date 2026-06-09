@@ -6,10 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY app/backendapi/requirements.txt /app/backendapi/requirements.txt
-RUN pip install --no-cache-dir -r /app/backendapi/requirements.txt
+COPY app/backendapi/requirements.txt /app/app/backendapi/requirements.txt
+RUN pip install --no-cache-dir -r /app/app/backendapi/requirements.txt
 
-COPY . /app
+COPY app/backendapi /app/app/backendapi
 
 RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
 USER appuser

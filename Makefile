@@ -7,7 +7,7 @@ COMPOSE := docker compose
 COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 COMPOSE_CLOUDSQL := $(COMPOSE) -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql
 
-.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod run-prod-cloudsql clean-legacy stop-all logs-all ps restart-all
+.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod run-prod-cloudsql clean-legacy stop-all logs-all ps restart-all prune-docker
 
 help:
 	@echo "Available targets:"
@@ -25,6 +25,7 @@ help:
 	@echo "  make logs-all       # tail docker compose logs"
 	@echo "  make ps             # show docker compose service status"
 	@echo "  make restart-all    # restart all docker services"
+	@echo "  make prune-docker   # free disk: remove unused images/build cache (VM before rebuild)"
 
 setup-env:
 	@test -f app/backendapi/.env || (cp app/backendapi/.env.example app/backendapi/.env && echo "Created app/backendapi/.env")
@@ -74,3 +75,8 @@ ps:
 
 restart-all:
 	$(COMPOSE) restart
+
+prune-docker:
+	docker system prune -af
+	docker builder prune -af
+	@echo "Docker prune done. Check: df -h / && docker system df"

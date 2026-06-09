@@ -11,16 +11,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY app/agents/requirements.txt /tmp/agents/requirements.txt
-# Install CPU-only torch wheel first so ultralytics doesn't pull the CUDA build.
+# Install torch+torchvision (CPU) first, then app deps without opencv-python duplicate.
+# ultralytics is installed --no-deps to avoid pulling opencv-python (~70MB) on top of headless.
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
-        torch==2.4.1 \
-    && pip install --no-cache-dir -r /tmp/agents/requirements.txt
+        "torch==2.4.1" "torchvision==0.19.1" \
+    && pip install --no-cache-dir \
+        fastapi==0.115.12 "uvicorn[standard]==0.34.2" python-dotenv==1.0.1 \
+        pydantic==2.11.4 openai==1.76.0 Pillow==11.2.1 opencv-python-headless==4.11.0.86 \
+        jinja2==3.1.6 python-multipart==0.0.20 pytesseract==0.3.13 "pyyaml>=6.0" \
+        matplotlib scipy pandas seaborn psutil py-cpuinfo requests tqdm ultralytics-thop \
+    && pip install --no-cache-dir ultralytics==8.3.27 --no-deps
 
-# Copy the feedback agent source AND any pre-baked highlight YOLO weights
-# (agents/feedback/models/highlight_yolo_v1.pt). The weights file is optional —
-# the runtime gracefully falls back to the legacy HSV detector if it is absent
-# or VIDEO_HIGHLIGHT_DETECTOR is left unset.
 COPY app/agents /app/agents
 COPY app/yolo_model /app/yolo_model
 RUN mkdir -p /app/agents/feedback/models /app/yolo_model/artifacts/pose
