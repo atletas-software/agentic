@@ -16,8 +16,8 @@ Trained highlight weights are versioned at:
 app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
 ```
 
-After `git pull` on the VM, rebuild **feedback-agent** so the image bakes this file to
-`/app/agents/feedback/models/highlight_yolo_v1.pt`.
+After `git pull`, `docker-compose.yml` bind-mounts this file into the container (no rebuild
+required). Rebuild feedback-agent only when Python/torch dependencies change.
 
 ## Setup on the VM (if not baked into the image)
 

@@ -99,8 +99,8 @@ services:
       - "${FEEDBACK_AGENT_PORT:-5055}:5055"
     volumes:
       - feedback_agent_data:/app/data
-      # Place highlight_yolo_v1.pt on the host before first run (see model-weights/README.md).
-      - ${YOLO_MODEL_WEIGHTS_DIR:-./model-weights}:/run/models:ro
+      # Weights from git checkout — no image rebuild needed when disk is tight on the VM.
+      - ./app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt:/app/agents/feedback/models/highlight_yolo_v1.pt:ro
     command: ["uvicorn", "agents.feedback.main:app", "--host", "0.0.0.0", "--port", "5055"]
     init: true
     restart: unless-stopped
