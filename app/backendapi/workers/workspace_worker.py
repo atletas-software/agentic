@@ -22,7 +22,12 @@ from backendapi.services.feedback_public_url import (
 )
 from backendapi.services.sheet_sync import SYNC_DESTINATION_HEADERS
 from backendapi.services.player_directory import resolve_player_key_by_name
-from backendapi.services.pose_video_pipeline import pose_pipeline_enabled, run_pose_pipeline_for_job
+from backendapi.services.pose_video_pipeline import (
+    pose_pipeline_enabled,
+    pose_pipeline_remote_only,
+    run_pose_pipeline_for_job,
+    worker_should_run_pose_pipeline,
+)
 from backendapi.services.workspace_enqueue import (
     enqueue_destination_snapshot_embed_job,
     enqueue_feedback_delegate_job,
@@ -307,23 +312,32 @@ def process_video_processing_job(agent_job_id: int) -> dict[str, Any]:
             return {"ok": False, "error": "video_url_required"}
 
         info("video_processing_start", agent_job_id=agent_job_id, video_url=video_url[:120])
-        pose_json_path = run_pose_pipeline_for_job(video_url, agent_job_id=agent_job_id)
-
+        pose_json_path = ""
         result: dict[str, Any] = {
-            "pose_json_path": pose_json_path,
             "video_url": video_url,
             "workspace_id": job.workspace_id,
+            "pose_remote_only": pose_pipeline_remote_only(),
         }
-        try:
-            from pathlib import Path
+        if worker_should_run_pose_pipeline():
+            pose_json_path = run_pose_pipeline_for_job(video_url, agent_job_id=agent_job_id)
+            result["pose_json_path"] = pose_json_path
+            try:
+                from pathlib import Path
 
-            summary = json.loads(Path(pose_json_path).read_text(encoding="utf-8"))
-            result["frames_detected"] = sum(
-                1 for f in summary.get("pose_results", []) if f.get("detected")
+                summary = json.loads(Path(pose_json_path).read_text(encoding="utf-8"))
+                result["frames_detected"] = sum(
+                    1 for f in summary.get("pose_results", []) if f.get("detected")
+                )
+                result["event_count_hint"] = "see pose_feedback after delegate"
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            result["pose_deferred_to"] = "feedback-agent"
+            info(
+                "video_processing_pose_deferred",
+                agent_job_id=agent_job_id,
+                remote_only=pose_pipeline_remote_only(),
             )
-            result["event_count_hint"] = "see pose_feedback after delegate"
-        except Exception:  # noqa: BLE001
-            pass
 
         chain_raw = payload.get("chain_feedback", True)
         chain = chain_raw if isinstance(chain_raw, bool) else str(chain_raw).strip().lower() not in (
@@ -333,7 +347,9 @@ def process_video_processing_job(agent_job_id: int) -> dict[str, Any]:
             "off",
         )
         if chain:
-            delegate_payload = {**payload, "pose_json_path": pose_json_path}
+            delegate_payload = dict(payload)
+            if pose_json_path:
+                delegate_payload["pose_json_path"] = pose_json_path
             delegate = AgentJob(
                 workspace_id=job.workspace_id,
                 agent_type="FEEDBACK_DELEGATE",
@@ -354,8 +370,13 @@ def process_video_processing_job(agent_job_id: int) -> dict[str, Any]:
         job.result_json = json.dumps(result, ensure_ascii=True)
         job.completed_at = datetime.now(UTC)
         db.commit()
-        info("video_processing_complete", agent_job_id=agent_job_id, pose_json_path=pose_json_path)
-        return {"ok": True, "pose_json_path": pose_json_path}
+        info(
+            "video_processing_complete",
+            agent_job_id=agent_job_id,
+            pose_json_path=pose_json_path or None,
+            pose_deferred=pose_pipeline_remote_only() and not pose_json_path,
+        )
+        return {"ok": True, "pose_json_path": pose_json_path or None}
     except Exception as exc:  # noqa: BLE001
         error("video_processing_failed", agent_job_id=agent_job_id, error=str(exc))
         try:
@@ -449,7 +470,12 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
                 job.result_json = json.dumps(existing, ensure_ascii=True)
                 db.commit()
 
-        if body.get("use_pose_pipeline") and not body.get("pose_json_path") and video_url:
+        if (
+            body.get("use_pose_pipeline")
+            and not body.get("pose_json_path")
+            and video_url
+            and worker_should_run_pose_pipeline()
+        ):
             info("feedback_delegate_pose_pipeline", agent_job_id=agent_job_id)
             pose_json_path = run_pose_pipeline_for_job(video_url, agent_job_id=agent_job_id)
             body["pose_json_path"] = pose_json_path
@@ -464,6 +490,8 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             }
             job.result_json = json.dumps(prev, ensure_ascii=True)
             db.commit()
+        elif body.get("use_pose_pipeline") and pose_pipeline_remote_only():
+            ctx_meta["pose_deferred_to"] = "feedback-agent"
 
         if agent_job_cancel_requested(agent_job_id):
             job.status = "FAILED"

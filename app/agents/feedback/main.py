@@ -880,4 +880,13 @@ async def marker_focus_frame_image(review_id: str, marker_id: int) -> FileRespon
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"ok": True})
+    from yolo_model.runtime_health import check_yolo_runtime
+
+    yolo = check_yolo_runtime()
+    return JSONResponse(
+        {
+            "ok": True,
+            "yolo": yolo,
+            "pose_pipeline_ready": bool(yolo.get("ready_for_pose_pipeline")),
+        }
+    )

@@ -66,6 +66,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
+      # Slim worker has no torch — YOLO runs in feedback-agent only.
+      POSE_PIPELINE_REMOTE_ONLY: "true"
     volumes:
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
@@ -87,11 +89,17 @@ services:
     env_file:
       - app/agents/.env
     environment:
-      PYTHONPATH: /app/app
+      PYTHONPATH: /app
+      YOLO_POSE_DEVICE: cpu
+      YOLO_POSE_WEIGHTS: yolov8n-pose.pt
+      YOLO_HIGHLIGHT_WEIGHTS: /run/models/highlight_yolo_v1.pt
+      POSE_PIPELINE_OUTPUT_DIR: /app/data/pose
     ports:
       - "${FEEDBACK_AGENT_PORT:-5055}:5055"
     volumes:
       - feedback_agent_data:/app/data
+      # Place highlight_yolo_v1.pt on the host before first run (see model-weights/README.md).
+      - ${YOLO_MODEL_WEIGHTS_DIR:-./model-weights}:/run/models:ro
     command: ["uvicorn", "agents.feedback.main:app", "--host", "0.0.0.0", "--port", "5055"]
     init: true
     restart: unless-stopped
