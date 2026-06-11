@@ -126,6 +126,21 @@ pip_install_if_missing() {
   pip install --no-cache-dir "$@"
 }
 
+install_ultralytics_stack() {
+  export PYTHONPATH="${ROOT}/app"
+  if python3 -c "from ultralytics import YOLO" 2>/dev/null; then
+    log "  ultralytics import OK"
+    return 0
+  fi
+  log "  installing ultralytics + runtime deps…"
+  pip install --no-cache-dir ultralytics==8.3.27 --no-deps
+  pip install --no-cache-dir -r "${ROOT}/app/pose_api/requirements-ultralytics-runtime.txt"
+  python3 -c "from ultralytics import YOLO" || {
+    log "ERROR: ultralytics still fails to import after runtime deps"
+    exit 1
+  }
+}
+
 setup_deps() {
   setup_venv_if_needed() {
     if should_use_system_python; then return 0; fi
@@ -152,7 +167,7 @@ setup_deps() {
   else
     log "Installing only missing packages (not full requirements.txt)…"
     pip_install_if_missing cv2 opencv-python-headless==4.11.0.86
-    pip_install_if_missing ultralytics ultralytics==8.3.27 --no-deps
+    install_ultralytics_stack
     pip_install_if_missing fastapi fastapi==0.115.12
     pip_install_if_missing uvicorn uvicorn==0.34.2
     pip_install_if_missing httpx httpx==0.28.1
@@ -165,7 +180,7 @@ setup_deps() {
         exit 1
       elif [[ "$SKIP_TORCH" -eq 0 ]]; then
         bash scripts/install-torch.sh
-        pip_install_if_missing ultralytics ultralytics==8.3.27 --no-deps
+        install_ultralytics_stack
       fi
       stack_ready || exit 1
     }

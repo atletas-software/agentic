@@ -13,17 +13,19 @@ pip install --no-cache-dir \
   httpx==0.28.1 \
   python-dotenv==1.0.1
 
-echo "[bootstrap] Installing opencv-headless (largest download ~20MB)…"
+echo "[bootstrap] Installing opencv-headless (~50MB)…"
 pip install --no-cache-dir opencv-python-headless==4.11.0.86
 
-echo "[bootstrap] Installing ultralytics without heavy deps…"
+echo "[bootstrap] Installing ultralytics + minimal runtime deps (no full opencv-python)…"
 pip install --no-cache-dir ultralytics==8.3.27 --no-deps
+pip install --no-cache-dir -r app/pose_api/requirements-ultralytics-runtime.txt
 
 export PYTHONPATH="${ROOT}/app"
 python3 - <<'PY'
 import torch, cv2, fastapi, uvicorn, httpx
 from ultralytics import YOLO
 print("OK torch", torch.__version__, "cuda", torch.cuda.is_available())
+print("OK ultralytics YOLO")
 PY
 
 echo "[bootstrap] Done. Start with: bash scripts/start-pose-api.sh"

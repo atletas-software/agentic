@@ -1,0 +1,11 @@
+# Import-time deps for ultralytics==8.3.27 when installed with --no-deps.
+# Does NOT include opencv-python (use opencv-python-headless separately).
+matplotlib
+pyyaml
+requests
+scipy
+pandas
+psutil
+py-cpuinfo
+ultralytics-thop
+tqdm
