@@ -15,7 +15,7 @@ RUN apt-get update \
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
         "torch==2.4.1" "torchvision==0.19.1" \
     && pip install --no-cache-dir \
-        fastapi==0.115.12 "uvicorn[standard]==0.34.2" python-dotenv==1.0.1 \
+        fastapi==0.115.12 "uvicorn[standard]==0.34.2" httpx==0.28.1 python-dotenv==1.0.1 \
         pydantic==2.11.4 openai==1.76.0 Pillow==11.2.1 opencv-python-headless==4.11.0.86 \
         jinja2==3.1.6 python-multipart==0.0.20 pytesseract==0.3.13 "pyyaml>=6.0" \
         matplotlib scipy pandas seaborn psutil py-cpuinfo requests tqdm ultralytics-thop \

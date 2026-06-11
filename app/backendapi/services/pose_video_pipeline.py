@@ -1,7 +1,8 @@
 """Platform worker wrapper around ``yolo_model.pipeline.run_pose_pipeline``.
 
-In Docker production the slim worker image has no torch; YOLO runs in feedback-agent only.
-Set ``POSE_PIPELINE_REMOTE_ONLY=true`` (default) so the worker delegates pose to feedback-agent.
+In Docker production the slim worker image has no torch. With ``POSE_PIPELINE_REMOTE_ONLY=true``
+(default), pose runs in feedback-agent. Set ``POSE_API_BASE_URL`` on feedback-agent to offload
+YOLO to a RunPod GPU host instead of local CPU inference.
 """
 
 from __future__ import annotations

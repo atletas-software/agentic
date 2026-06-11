@@ -267,8 +267,10 @@ def vision_analyze_circle_segment(
         user_lines.extend(
             [
                 "",
-                "--- SESSION COACHING PRIORITIES (admin) ---",
-                "Prioritize these themes when supported by visible evidence; do not invent actions to satisfy them.",
+                "--- ADMIN SESSION BRIEF (required lens for this review) ---",
+                "The coach specified role, position, and session focus below. Judge the circled player against "
+                "these expectations when the frames support it (e.g. Center Defender: line height, scanning, "
+                "1v1 positioning). Do not invent actions; stay grounded in visible evidence.",
                 cf[:3000],
             ]
         )
@@ -277,7 +279,8 @@ def vision_analyze_circle_segment(
         user_lines.extend(
             [
                 "",
-                "--- SHARED CLUB RUBRIC (reference vocabulary; align language, not facts) ---",
+                "--- SHARED CLUB RUBRIC (retrieved for this session; align coaching language and standards) ---",
+                "Use with the admin session brief above. Rubric describes organization-wide role expectations.",
                 org[:4000],
             ]
         )
@@ -366,8 +369,8 @@ def synthesize_overall_from_circle_segments(
         f"Player focus: {player_focus or 'the athlete'}",
         f"Video duration (seconds): {duration_sec:.2f}",
         f"Analysis scope: {analysis_scope or 'Full clip.'}",
-        f"Coaching focus requested: {coaching_focus or 'Balanced technical and tactical feedback.'}",
-        "Session direction applies only when supported by episode evidence; do not invent observations.",
+        f"Admin session brief (role/position/focus): {coaching_focus or 'Balanced technical and tactical feedback.'}",
+        "Judge episodes against the admin brief and shared rubric when supported by evidence; do not invent observations.",
         "",
         "--- EPISODES (structured; one red-circle visibility span per block) ---",
         segments_markdown[:80_000],

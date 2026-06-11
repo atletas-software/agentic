@@ -137,6 +137,11 @@ def _load_job(review_id: str) -> Optional[Dict[str, Any]]:
     return load_json(_job_path(review_id))
 
 
+def _coaching_focus_from_payload(payload: Dict[str, Any]) -> str:
+    """Admin Agent Lab brief (role, position, session priorities)."""
+    return str(payload.get("coaching_prompt") or payload.get("coaching_focus") or "").strip()
+
+
 def _absolute_url(request: Request, path: str) -> str:
     public_base = _public_origin()
     if public_base:
@@ -199,7 +204,7 @@ def _run_text_coaching_job(review_id: str, payload: Dict[str, Any]) -> None:
             sport=str(payload.get("sport") or "Soccer"),
             player_focus=str(payload.get("player_focus") or "Unknown player"),
             analysis_scope=str(payload.get("analysis_scope") or ""),
-            coaching_focus=str(payload.get("coaching_focus") or ""),
+            coaching_focus=_coaching_focus_from_payload(payload),
             video_link_for_reference=str(payload.get("video_url") or ""),
             player_memory_context=(payload.get("player_memory_context") or "").strip() or None,
             shared_context=(payload.get("shared_context") or "").strip() or None,
@@ -268,17 +273,32 @@ def _run_pose_review_job(review_id: str, payload: Dict[str, Any]) -> None:
     try:
         pose_json_path = (payload.get("pose_json_path") or "").strip()
         video_url = (payload.get("video_url") or "").strip()
-        if not pose_json_path:
+        inline_pose = payload.get("pose_json")
+        if isinstance(inline_pose, dict) and inline_pose:
+            pose_data = inline_pose
+        elif pose_json_path:
+            from yolo_model.pose_feedback.engine import load_pose_json
+
+            pose_data = load_pose_json(Path(pose_json_path))
+        else:
             if not video_url:
-                raise ValueError("pose_json_path or video_url is required for pose pipeline review")
-            from yolo_model.pipeline.runner import run_pose_pipeline
+                raise ValueError("pose_json_path, pose_json, or video_url is required for pose pipeline review")
+            from yolo_model.pose_api.client import pose_api_configured, resolve_pose_data_for_video
 
-            pose_json_path = str(
-                run_pose_pipeline(video_url, job_key=f"review_{review_id}")
+            if pose_api_configured():
+                _merge_job_progress(
+                    review_id,
+                    {
+                        "phase": "pose_remote",
+                        "progress_detail": "Remote YOLO pose job (RunPod) — this can take many minutes…",
+                    },
+                )
+            pose_data = resolve_pose_data_for_video(
+                video_url,
+                job_key=f"review_{review_id}",
+                on_progress=lambda p: _merge_job_progress(review_id, p),
+                cancel_check=lambda: review_cancel_requested(review_id),
             )
-        from yolo_model.pose_feedback.engine import load_pose_json
-
-        pose_data = load_pose_json(Path(pose_json_path))
         review = build_review_from_pose_json(
             review_id=review_id,
             video_url=video_url or str(pose_data.get("video") or ""),
@@ -286,7 +306,7 @@ def _run_pose_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             sport=payload.get("sport", "Soccer"),
             player_focus=payload.get("player_focus", "Unknown player"),
             analysis_scope=payload.get("analysis_scope", ""),
-            coaching_focus=payload.get("coaching_focus", ""),
+            coaching_focus=_coaching_focus_from_payload(payload),
             player_memory_context=(payload.get("player_memory_context") or "").strip() or None,
             shared_context=(payload.get("shared_context") or "").strip() or None,
             player_memory_retrieval_debug=payload.get("player_memory_retrieval_debug"),
@@ -331,7 +351,7 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             sport=payload.get("sport", "Soccer"),
             player_focus=payload.get("player_focus", "Unknown player"),
             analysis_scope=payload.get("analysis_scope", ""),
-            coaching_focus=payload.get("coaching_focus", ""),
+            coaching_focus=_coaching_focus_from_payload(payload),
             player_memory_context=(payload.get("player_memory_context") or "").strip() or None,
             shared_context=(payload.get("shared_context") or "").strip() or None,
             player_memory_retrieval_debug=payload.get("player_memory_retrieval_debug"),
@@ -399,7 +419,7 @@ async def create_review(request: Request) -> JSONResponse:
     video_url = (payload.get("video_url") or "").strip()
     player_focus = (payload.get("player_focus") or "").strip()
     analysis_scope = (payload.get("analysis_scope") or "").strip()
-    coaching_focus = (payload.get("coaching_focus") or "").strip()
+    coaching_focus = _coaching_focus_from_payload(payload)
     mem = (payload.get("player_memory_context") or "").strip()
     shared = (payload.get("shared_context") or "").strip()
 
@@ -425,6 +445,7 @@ async def create_review(request: Request) -> JSONResponse:
         "sport": (payload.get("sport") or "Soccer").strip(),
         "analysis_scope": analysis_scope,
         "coaching_focus": coaching_focus,
+        "coaching_prompt": coaching_focus,
         "player_memory_context": mem,
         "shared_context": shared,
         "text_only": text_only,

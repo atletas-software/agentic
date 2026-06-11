@@ -105,6 +105,24 @@ services:
     init: true
     restart: unless-stopped
 
+  # Optional local GPU/CPU pose API (RunPod uses the same image remotely). Profile: pose-api
+  pose-api:
+    profiles: ["pose-api"]
+    build:
+      context: .
+      dockerfile: app/pose_api/Dockerfile
+    container_name: athlete-agent-pose-api
+    environment:
+      PYTHONPATH: /app
+      YOLO_POSE_DEVICE: ${YOLO_POSE_DEVICE:-cpu}
+      YOLO_HIGHLIGHT_WEIGHTS: /app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
+      DATA_DIR: /app/data/pose_api
+    ports:
+      - "${POSE_API_PORT:-5060}:5060"
+    volumes:
+      - pose_api_data:/app/data
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     container_name: athlete-agent-redis
@@ -129,3 +147,4 @@ services:
 
 volumes:
   feedback_agent_data:
+  pose_api_data:

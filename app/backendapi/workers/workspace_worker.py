@@ -491,7 +491,8 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             job.result_json = json.dumps(prev, ensure_ascii=True)
             db.commit()
         elif body.get("use_pose_pipeline") and pose_pipeline_remote_only():
-            ctx_meta["pose_deferred_to"] = "feedback-agent"
+            pose_api = (os.getenv("POSE_API_BASE_URL") or "").strip()
+            ctx_meta["pose_deferred_to"] = "pose-api-runpod" if pose_api else "feedback-agent"
 
         if agent_job_cancel_requested(agent_job_id):
             job.status = "FAILED"
