@@ -98,19 +98,20 @@ load_env() {
 stack_ready() {
   PYTHONPATH="${ROOT}/app" python3 - <<'PY'
 import sys
+mods = ("torch", "cv2", "fastapi", "uvicorn", "httpx", "dotenv", "ultralytics")
 missing = []
-for mod in ("torch", "cv2", "fastapi", "uvicorn", "httpx", "dotenv", "ultralytics"):
+for m in mods:
     try:
-        __import__(mod)
+        __import__(m)
+        print("ok", m)
     except ImportError:
-        missing.append(mod)
+        missing.append(m)
+        print("missing", m)
 if missing:
-    print("missing:", ",".join(missing), file=sys.stderr)
+    print("missing:", ",".join(sorted(set(missing))), file=sys.stderr)
     sys.exit(1)
 import torch
-if not torch.cuda.is_available():
-    print("warning: cuda not available", file=sys.stderr)
-print("ok torch", torch.__version__)
+print("cuda", torch.cuda.is_available(), "torch", torch.__version__)
 PY
 }
 
@@ -140,8 +141,12 @@ setup_deps() {
   activate_python || true
 
   if [[ "$SKIP_PIP" -eq 1 ]]; then
-    log "Skipping pip (--start-only / --skip-pip)"
-    stack_ready || { log "Missing deps — run: bash scripts/run-pose-api.sh --setup-only"; exit 1; }
+    if stack_ready 2>/dev/null; then
+      log "Skipping pip (--start-only / --skip-pip)"
+    else
+      log "Not ready — running minimal bootstrap (missing packages only)…"
+      bash "${ROOT}/scripts/bootstrap-pose-api.sh"
+    fi
   elif stack_ready 2>/dev/null; then
     log "All imports OK — skipping pip entirely (0 downloads)"
   else
@@ -221,7 +226,7 @@ if [[ "$DO_CHECK" -eq 1 ]]; then
     log "READY — no pip needed. Start with: bash scripts/start-pose-api.sh"
     exit 0
   fi
-  log "NOT READY — missing imports (see above). Install only those, or use RunPod PyTorch template."
+  log "NOT READY — run once: bash scripts/bootstrap-pose-api.sh"
   exit 1
 fi
 
