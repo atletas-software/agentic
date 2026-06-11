@@ -1,4 +1,5 @@
-# Pose API only (RunPod venv — install torch first via scripts/install-torch.sh)
+# Pose API — lean install (no torch here; use pod CUDA torch or scripts/install-torch.sh).
+# ultralytics is installed separately with --no-deps to avoid pulling pandas/matplotlib/opencv-python.
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 httpx==0.28.1
@@ -7,12 +8,7 @@ pydantic==2.11.4
 Pillow==11.2.1
 opencv-python-headless==4.11.0.86
 pyyaml>=6.0
-matplotlib
-scipy
-pandas
 psutil
-py-cpuinfo
 requests
 tqdm
 ultralytics-thop
-ultralytics==8.3.27

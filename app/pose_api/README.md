@@ -53,12 +53,21 @@ PORT=5060
 bash scripts/run-pose-api.sh
 ```
 
-This will:
+On **RunPod PyTorch** pods this is **fast** (~1–2 min):
 
-1. Create `venv/`
-2. `pip install` pose API requirements
-3. `bash scripts/install-torch.sh` (CUDA torch when `nvidia-smi` works)
-4. Start `uvicorn pose_api.main:app` on `0.0.0.0:5060` in the background
+- Uses **system Python** (CUDA torch already installed — no 2GB torch download)
+- Installs only FastAPI + small deps + `ultralytics --no-deps` (skips pandas/matplotlib/full opencv)
+
+If a previous slow install is still running, `Ctrl+C` and re-run after pulling latest `scripts/run-pose-api.sh`.
+
+Manual fast path:
+
+```bash
+export POSE_API_USE_SYSTEM_PYTHON=1
+pip install --no-cache-dir -r app/pose_api/requirements.txt
+pip install --no-cache-dir ultralytics==8.3.27 --no-deps
+bash scripts/run-pose-api.sh --start-only
+```
 
 Other commands:
 

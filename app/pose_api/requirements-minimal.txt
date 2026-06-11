@@ -1,0 +1,6 @@
+# Absolute minimum for pose_api HTTP server (RunPod: install only if import fails).
+# Do NOT list opencv/torch/ultralytics — RunPod PyTorch template usually has them.
+fastapi==0.115.12
+uvicorn==0.34.2
+httpx==0.28.1
+python-dotenv==1.0.1
