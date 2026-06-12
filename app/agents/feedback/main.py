@@ -341,6 +341,7 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             "video_url": payload["video_url"],
             "player_focus": payload.get("player_focus", ""),
             "sport": payload.get("sport", "Soccer"),
+            "mode": "yolo-highlight",
             "error": None,
         },
     )

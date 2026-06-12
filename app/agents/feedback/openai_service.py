@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from pathlib import Path
 from typing import Any, List, Literal, Optional
 
@@ -31,6 +32,25 @@ class CircleSegmentVisionOutput(BaseModel):
 
     category: Category
     sentiment: Sentiment
+    pitch_location: str = Field(
+        max_length=1200,
+        description=(
+            "Where the circled player is on the pitch from the wide camera view: half (own/opponent), "
+            "channel (left/center/right), distance from halfway line, vertical third, and a coach label "
+            "e.g. 'left defensive midfield support'. No body mechanics."
+        ),
+    )
+    coaching_note: str = Field(
+        max_length=2500,
+        description=(
+            "Coach-to-player note: tactical/technical soccer only — game situations (e.g. 3v2 overload, "
+            "1v1, third-man runs), support angles, passing/receiving decisions, pressing, dribble skills. "
+            "Reference pitch_location when useful. Never describe how the body looks."
+        ),
+    )
+
+
+class _CoachingNoteRewrite(BaseModel):
     coaching_note: str = Field(max_length=2500)
 
 
@@ -209,6 +229,123 @@ def summarize_highlight_windows_for_feedback(
     return text, debug
 
 
+def _pose_context_enabled_for_vision() -> bool:
+    """YOLO pose is used to find highlight moments; biomechanical context in vision is opt-in."""
+    return (os.getenv("FEEDBACK_INCLUDE_POSE_CONTEXT_IN_VISION") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+_COACHING_STYLE_GOOD_EXAMPLES = """
+GOOD coaching_note style (match this voice — tactical soccer, like prior coach annotations):
+- "Well done applying the 3rd man principle to progress the attack. As you can see, the on-ball player receives the ball in front of him."
+- "3 v 2, attacking advantage on the wing. Try to support the on-ball player and outplay the overload."
+- "Well done supporting the striker from underneath as an attacking midfielder. The skill you used there — roll, step-over, accelerate with the other foot — is also great in a 1 v 1."
+
+BAD coaching_note style (NEVER write like this):
+- "His body shape is mostly upright and ready… shoulder dip may reduce balance… squaring the shoulders toward play…"
+- Any mention of upright torso, straight knees, knee flexion, shoulder position/dip, squaring shoulders, athletic posture, explosiveness from stance, or physiotherapy cues.
+""".strip()
+
+_BIOMECHANICAL_COACHING_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bshoulder",
+        r"\btorso\b",
+        r"\bknees?\b",
+        r"\bupright\b",
+        r"\bposture\b",
+        r"\bflexion\b",
+        r"\bsquaring\b",
+        r"\bperipheral vision\b",
+        r"\bathletic (?:stance|posture|shape)\b",
+        r"\bbody shape is\b",
+        r"\b(?:dip|lean|tilt).{0,40}\b(?:shoulder|torso|balance)\b",
+        r"\b(?:shoulder|torso|hip).{0,40}\b(?:balance|vision|scanning)\b",
+        r"\bready,? supporting effective scanning\b",
+        r"\bexplosiveness\b",
+    )
+)
+
+
+def _coaching_note_has_biomechanical_language(text: str) -> bool:
+    return any(p.search(text or "") for p in _BIOMECHANICAL_COACHING_PATTERNS)
+
+
+def _rewrite_coaching_note_tactical(
+    client: OpenAI,
+    model: str,
+    *,
+    note: str,
+    player_focus: str,
+    player_memory_context: str | None,
+) -> str:
+    """Strip anatomy/posture phrasing; keep tactical soccer coaching only."""
+    mem = (player_memory_context or "").strip()
+    mem_block = mem[:4000] if mem else "(none)"
+    prompt = "\n".join(
+        [
+            "Rewrite the coaching note below for a youth soccer player.",
+            "Keep the same overall tactical point (positioning, decisions, communication, overload, etc.) "
+            "but remove ALL description of how the body looks or moves mechanically.",
+            "Do NOT mention: shoulders, torso, knees, upright, posture, balance (physical), squaring, peripheral vision, athletic stance.",
+            "Write 1–3 sentences like a coach annotating match video — same style as PLAYER MEMORY examples.",
+            f"Player: {player_focus or 'the player'}",
+            "",
+            "--- PLAYER MEMORY style reference ---",
+            mem_block,
+            "",
+            "--- NOTE TO REWRITE ---",
+            note,
+        ]
+    )
+    response = client.responses.parse(
+        model=model,
+        input=[
+            {"role": "system", "content": _soccer_coaching_vision_system()},
+            {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
+        ],
+        text_format=_CoachingNoteRewrite,
+    )
+    parsed = response.output_parsed
+    if parsed is None or not (parsed.coaching_note or "").strip():
+        return note
+    rewritten = parsed.coaching_note.strip()
+    if _coaching_note_has_biomechanical_language(rewritten):
+        return note
+    return rewritten
+
+
+def _soccer_coaching_vision_system() -> str:
+    return (
+        "You are an experienced youth soccer coach reviewing still frames from a match clip. "
+        "Your output must read like existing coach annotations in PLAYER MEMORY — not like a physiotherapist or pose-analysis tool.\n\n"
+        + _COACHING_STYLE_GOOD_EXAMPLES
+        + "\n\n"
+        "First establish pitch_location from wide field images (half, channel, zone, coach label). "
+        "Then coach tactically: game picture (overload, 3v2, third-man), role, on-ball/off-ball actions, "
+        "support angles, pressing, line organization, and decision quality.\n"
+        "Category 'body_shape' means open to receive / half-turn to play forward — NEVER describe shoulders, torso, or stance.\n"
+        "Forbidden in coaching_note: shoulder(s), torso, knee(s), upright, posture, flexion, squaring, peripheral vision, "
+        "athletic stance, body shape is [upright/ready], physical balance, explosiveness from stance, degrees, physiotherapy.\n"
+        "Tactical positioning (goal-side, line height, spacing, show inside) is GOOD. Describing how the player's body looks is BAD.\n"
+        "If frames only show a player standing, comment on defensive line, marking, cover, or when to step — not anatomy.\n"
+        "Prefer coaching that changes future behavior over narrating what already happened."
+    )
+
+
+def _subsample_image_paths(paths: list[Path], max_n: int) -> list[Path]:
+    if max_n <= 0 or not paths:
+        return []
+    if len(paths) <= max_n:
+        return list(paths)
+    n = len(paths)
+    idxs = [round(i * (n - 1) / (max_n - 1)) for i in range(max_n)]
+    return [paths[int(i)] for i in idxs]
+
+
 def vision_analyze_circle_segment(
     *,
     frame_paths: list[Path],
@@ -221,6 +358,7 @@ def vision_analyze_circle_segment(
     segment_index: int,
     segment_total: int,
     pose_context: str | None = None,
+    player_crop_paths: list[Path] | None = None,
     coaching_focus: str | None = None,
     player_memory_context: str | None = None,
     shared_context: str | None = None,
@@ -248,75 +386,127 @@ def vision_analyze_circle_segment(
 
     model = (os.getenv("VIDEO_CIRCLE_SEGMENT_VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini").strip()
     client = OpenAI(api_key=api_key)
+    mem_limit = int((os.getenv("FEEDBACK_SEGMENT_MEMORY_MAX_CHARS") or "12000").strip() or "12000")
+    org_limit = int((os.getenv("FEEDBACK_SEGMENT_SHARED_MAX_CHARS") or "12000").strip() or "12000")
 
     user_lines = [
-        "You analyze still frames from one continuous time window of a soccer performance clip.",
+        "Analyze still frames from one continuous time window of a soccer performance clip.",
         f"Sport: {sport or 'Soccer'}. Player focus: {player_focus or 'the athlete circled in red when visible'}.",
         f"Episode {segment_index} of {segment_total}: red highlight circle visibility is approximately {t_on:.2f}s–{t_off:.2f}s.",
         f"Frames span {t_lo:.2f}s through {t_hi:.2f}s (includes ~{t_lo:.2f}s–{t_on:.2f}s before the circle reliably appears, the span while it is on, and ~{t_off:.2f}s–{t_hi:.2f}s after it disappears).",
         "Images are chronological. The red circle may only appear on some middle frames.",
-        "",
-        "Tasks:",
-        "1) Judge positioning, movement, and decisions for the circled/target player across the whole window (before, during, after the highlight).",
-        "2) Choose one primary category and sentiment.",
-        "3) Write coaching_note as 2–5 tight sentences: what to keep doing, what to adjust, and the next read — grounded only in what the stills support.",
-        "If the target player is unclear, stay conservative and avoid invented actions.",
     ]
     cf = (coaching_focus or "").strip()
-    if cf:
-        user_lines.extend(
-            [
-                "",
-                "--- ADMIN SESSION BRIEF (required lens for this review) ---",
-                "The coach specified role, position, and session focus below. Judge the circled player against "
-                "these expectations when the frames support it (e.g. Center Defender: line height, scanning, "
-                "1v1 positioning). Do not invent actions; stay grounded in visible evidence.",
-                cf[:3000],
-            ]
-        )
-    org = (shared_context or "").strip()
-    if org:
-        user_lines.extend(
-            [
-                "",
-                "--- SHARED CLUB RUBRIC (retrieved for this session; align coaching language and standards) ---",
-                "Use with the admin session brief above. Rubric describes organization-wide role expectations.",
-                org[:4000],
-            ]
-        )
     mem = (player_memory_context or "").strip()
+    org = (shared_context or "").strip()
     if mem:
         user_lines.extend(
             [
                 "",
-                "--- PLAYER MEMORY (continuity; do not contradict what you see in the frames) ---",
-                mem[:4000],
+                "--- PLAYER MEMORY (PRIMARY STYLE REFERENCE — write coaching_note like these prior annotations) ---",
+                mem[:mem_limit],
             ]
         )
-    pose_block = (pose_context or "").strip()
-    if pose_block:
+    if cf:
         user_lines.extend(
             [
                 "",
-                "YOLOv8 body-pose analysis for this highlight (shoulders through ankles only; use as supporting signal):",
+                "--- ADMIN SESSION BRIEF (role, position, session focus) ---",
+                cf[:3000],
+            ]
+        )
+    if org:
+        user_lines.extend(
+            [
+                "",
+                "--- SHARED CLUB RUBRIC (vocabulary and standards) ---",
+                org[:org_limit],
+            ]
+        )
+    has_crops = bool(player_crop_paths)
+    user_lines.extend(
+        [
+            "",
+            "Tasks:",
+            "1) From the WIDE field images, set pitch_location: where is the circled player on the pitch?",
+            "   Include: camera left/right half, own vs opponent half relative to halfway line, channel (left/center/right),",
+            "   vertical third (defensive/middle/attacking), and a coach zone label (e.g. left DM, right wing-back support).",
+            "2) Describe the game moment: attack/defend/transition, ball relative to player, on-ball vs off-ball role.",
+            "3) Name tactical ideas when visible: overload, 3v2, third-man, 1v1, press trigger, line height, support angle.",
+            "4) Choose one primary category and sentiment.",
+            "5) Write coaching_note as 1–3 sentences matching PLAYER MEMORY — tactical coaching only, like annotating match video.",
+            "Do NOT describe body mechanics (shoulders, torso, knees, posture, upright stance).",
+            "Ground only in visible evidence. If unclear, conservative tactical observation only.",
+        ]
+    )
+    if has_crops:
+        user_lines.extend(
+            [
+                "",
+                "Image order: WIDE FIELD frames first (pitch context), then PLAYER CROP frames (enlarged circled player from YOLO bbox).",
+                "Use wide frames for pitch_location; use crops to confirm which player and their action.",
+            ]
+        )
+    pose_block = (pose_context or "").strip()
+    if pose_block and _pose_context_enabled_for_vision():
+        user_lines.extend(
+            [
+                "",
+                "Optional low-confidence body-pose hints (do NOT quote angles or anatomy in coaching_note; "
+                "only use to infer readiness or balance if frames are ambiguous):",
                 pose_block,
-                "Blend visible action in the frames with posture findings; do not quote raw angle lists in coaching_note.",
             ]
         )
     user_text = "\n".join(user_lines)
+    max_wide = int((os.getenv("VIDEO_HIGHLIGHT_VISION_MAX_WIDE_FRAMES") or "4").strip() or "4")
+    max_crops = int((os.getenv("VIDEO_HIGHLIGHT_VISION_MAX_CROP_FRAMES") or "2").strip() or "2")
+    wide_paths = _subsample_image_paths(frame_paths, max_wide)
+    crop_paths = _subsample_image_paths(list(player_crop_paths or []), max_crops)
+
     content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
-    for path in frame_paths:
+    if wide_paths:
         content.append(
             {
-                "type": "input_image",
-                "image_url": f"data:image/jpeg;base64,{_encode_image(path)}",
+                "type": "input_text",
+                "text": f"--- WIDE FIELD VIEW ({len(wide_paths)} chronological still(s); use for pitch_location) ---",
             }
         )
+        for path in wide_paths:
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{_encode_image(path)}",
+                }
+            )
+    if crop_paths:
+        content.append(
+            {
+                "type": "input_text",
+                "text": (
+                    f"--- PLAYER CROP ({len(crop_paths)} still(s); YOLO highlight bbox — circled player enlarged) ---"
+                ),
+            }
+        )
+        for path in crop_paths:
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{_encode_image(path)}",
+                }
+            )
+    if not wide_paths and not crop_paths:
+        debug["outcome"] = "error"
+        debug["error"] = "no_frames"
+        raise RuntimeError("vision_analyze_circle_segment requires at least one frame.")
 
+    system = _soccer_coaching_vision_system()
     try:
         response = client.responses.parse(
             model=model,
-            input=[{"role": "user", "content": content}],
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
             text_format=CircleSegmentVisionOutput,
         )
         parsed = response.output_parsed
@@ -329,8 +519,24 @@ def vision_analyze_circle_segment(
         debug["error"] = "empty_parse"
         raise RuntimeError("Segment vision returned no parsed payload.")
 
+    if _coaching_note_has_biomechanical_language(parsed.coaching_note):
+        debug["biomechanical_language_detected"] = True
+        rewritten = _rewrite_coaching_note_tactical(
+            client,
+            model,
+            note=parsed.coaching_note,
+            player_focus=player_focus,
+            player_memory_context=player_memory_context,
+        )
+        if rewritten != parsed.coaching_note:
+            parsed = parsed.model_copy(update={"coaching_note": rewritten})
+            debug["coaching_note_rewritten"] = True
+
     debug["outcome"] = "success"
     debug["model"] = model
+    debug["wide_frame_count"] = len(wide_paths)
+    debug["crop_frame_count"] = len(crop_paths)
+    debug["system_message"] = _truncate_for_debug_text(system)
     return parsed, debug
 
 
@@ -359,7 +565,10 @@ def synthesize_overall_from_circle_segments(
         "You are an elite youth soccer performance analyst. You synthesize episode-level coaching notes into "
         "one overall assessment (strengths, improvements, next_focus). "
         "Ground the synthesis in the structured episode text and any storyboard pages; do not contradict them. "
-        "Tone from the reference prompt:\n"
+        "Write like PLAYER MEMORY coach annotations: tactical themes (support, overloads, third-man, 1v1 skills, "
+        "pressing, positioning to the ball). Never biomechanical or posture language.\n\n"
+        + _COACHING_STYLE_GOOD_EXAMPLES
+        + "\n\nTone from the reference prompt:\n"
         + (prompt_tone or "")[:6000]
     )
 

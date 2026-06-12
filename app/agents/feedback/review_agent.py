@@ -84,7 +84,7 @@ def _subsample_frame_assets(assets: list[FrameAsset], max_n: int) -> list[FrameA
 
 
 def _selected_detector() -> str:
-    raw = (os.getenv("VIDEO_HIGHLIGHT_DETECTOR") or "hsv").strip().lower()
+    raw = (os.getenv("VIDEO_HIGHLIGHT_DETECTOR") or "yolo").strip().lower()
     if raw in {"yolo", "yolov8"}:
         return "yolo"
     return "hsv"
@@ -195,6 +195,7 @@ def _try_yolo_segment_review(
             player_focus=player_focus,
             segment_index=idx,
             segment_total=total,
+            player_crop_paths=asset_record.player_crop_paths,
             coaching_focus=coaching_focus,
             player_memory_context=player_memory_context,
             shared_context=shared_context,
@@ -204,6 +205,7 @@ def _try_yolo_segment_review(
         vdbg["peak_conf"] = round(ev.peak_conf, 4)
         vdbg["probe_count"] = ev.probe_count
         vdbg["clip_mode"] = asset_record.clip_mode
+        vdbg["player_crop_count"] = len(asset_record.player_crop_paths)
         vision_debug.append(vdbg)
 
         episode_blocks.append(
@@ -212,6 +214,7 @@ def _try_yolo_segment_review(
                     f"### Episode {idx}/{total}  anchor≈{ev.anchor_sec:.2f}s  "
                     f"circle≈{ev.t_on:.2f}s–{ev.t_off:.2f}s  "
                     f"(YOLO peak conf={ev.peak_conf:.2f}, probes={ev.probe_count})",
+                    f"- pitch_location: {vis_out.pitch_location}",
                     f"- category: {vis_out.category}",
                     f"- sentiment: {vis_out.sentiment}",
                     f"- coaching: {vis_out.coaching_note}",
@@ -223,12 +226,18 @@ def _try_yolo_segment_review(
         while anchor_ts in used_ts:
             anchor_ts = round(anchor_ts + 0.05, 2)
         used_ts.add(anchor_ts)
+        loc = (vis_out.pitch_location or "").strip()
+        note = (vis_out.coaching_note or "").strip()
+        if loc and loc.lower() not in note.lower():
+            display_note = f"Where on the pitch: {loc}\n\n{note}"
+        else:
+            display_note = note
         moments.append(
             ReviewMoment(
                 timestamp_sec=anchor_ts,
                 category=vis_out.category,
                 sentiment=vis_out.sentiment,
-                coaching_note=vis_out.coaching_note,
+                coaching_note=display_note,
             )
         )
 
@@ -265,6 +274,10 @@ def _try_yolo_segment_review(
                 "clip_path": str(asset_record.clip_path) if asset_record.clip_path else None,
                 "meta_path": str(asset_record.meta_path) if asset_record.meta_path else None,
                 "annotated_dir": str(asset_record.annotated_dir) if asset_record.annotated_dir else None,
+                "player_crops_dir": (
+                    str(asset_record.player_crops_dir) if asset_record.player_crops_dir else None
+                ),
+                "player_crop_count": len(asset_record.player_crop_paths),
             }
         )
 
@@ -361,10 +374,9 @@ def _try_yolo_segment_review(
     }
     review["video_context"] = {
         "description": (
-            "YOLOv8 highlight-overlay detector → coarse (1s) + fine (0.2s) two-pass probe → "
-            "hysteresis + IoU-aware merge → per-event JPEG frames + mp4 clip + bbox metadata. "
-            "Each event window [t_on - pad, t_off + pad] is sent to the vision model for one "
-            "coaching marker; storyboards are built from the union of all event frames."
+            "YOLO highlight detector finds the red-circled player → per-event wide field frames + "
+            "player bbox crops → vision model infers pitch location and tactical coaching (no pose/keypoints). "
+            "Each highlight span becomes one timeline marker aligned with PLAYER MEMORY coaching style."
         ),
         "combined_highlight_text": segments_markdown[:60_000],
         "preprocess": video_pre,
@@ -793,6 +805,13 @@ def build_review_from_pose_json(
         all_window_assets.extend(assets)
         paths = [a.image_path for a in assets]
 
+        pose_ctx: str | None = None
+        if (os.getenv("FEEDBACK_INCLUDE_POSE_CONTEXT_IN_VISION") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            pose_ctx = format_pose_context_for_agent(ev)
         vis_out, vdbg = vision_analyze_circle_segment(
             frame_paths=paths,
             t_lo=t_lo,
@@ -803,7 +822,7 @@ def build_review_from_pose_json(
             player_focus=player_focus,
             segment_index=idx,
             segment_total=total,
-            pose_context=format_pose_context_for_agent(ev),
+            pose_context=pose_ctx,
             coaching_focus=coaching_focus,
             player_memory_context=player_memory_context,
             shared_context=shared_context,

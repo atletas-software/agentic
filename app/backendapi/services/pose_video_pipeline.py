@@ -18,8 +18,9 @@ def pose_pipeline_remote_only() -> bool:
 
 
 def pose_pipeline_enabled() -> bool:
-    raw = (os.getenv("FEEDBACK_USE_POSE_PIPELINE") or "true").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    """Pose pipeline is opt-in; default is YOLO highlight + tactical vision (no body keypoints)."""
+    raw = (os.getenv("FEEDBACK_USE_POSE_PIPELINE") or "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def worker_should_run_pose_pipeline() -> bool:

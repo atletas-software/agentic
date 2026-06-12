@@ -68,6 +68,7 @@ services:
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
       # Slim worker has no torch — YOLO runs in feedback-agent only.
       POSE_PIPELINE_REMOTE_ONLY: "true"
+      FEEDBACK_USE_POSE_PIPELINE: "false"
     volumes:
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
@@ -94,6 +95,8 @@ services:
       YOLO_POSE_WEIGHTS: yolov8n-pose.pt
       # Baked in feedback-agent image; do not point at empty /run/models unless file exists there.
       YOLO_HIGHLIGHT_WEIGHTS: /app/agents/feedback/models/highlight_yolo_v1.pt
+      VIDEO_HIGHLIGHT_DETECTOR: yolo
+      FEEDBACK_USE_POSE_PIPELINE: "false"
       POSE_PIPELINE_OUTPUT_DIR: /app/data/pose
     ports:
       - "${FEEDBACK_AGENT_PORT:-5055}:5055"

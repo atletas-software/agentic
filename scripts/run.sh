@@ -13,7 +13,7 @@
 #   FEEDBACK_PUBLIC_BASE_URL=https://YOUR-HOST-8000.proxy.runpod.net   # browser review links
 #   YOLO_POSE_DEVICE=cuda
 #   YOLO_HIGHLIGHT_WEIGHTS=app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
-#   FEEDBACK_USE_POSE_PIPELINE=true
+#   FEEDBACK_USE_POSE_PIPELINE=false   # default: YOLO highlight + tactical vision (no pose)
 #   OPENAI_API_KEY=sk-...
 #
 set -euo pipefail
@@ -85,7 +85,7 @@ load_env() {
 
 apply_defaults() {
   export FEEDBACK_AGENT_BASE_URL="${FEEDBACK_AGENT_BASE_URL:-http://127.0.0.1:5055}"
-  export FEEDBACK_USE_POSE_PIPELINE="${FEEDBACK_USE_POSE_PIPELINE:-true}"
+  export FEEDBACK_USE_POSE_PIPELINE="${FEEDBACK_USE_POSE_PIPELINE:-false}"
   export POSE_PIPELINE_OUTPUT_DIR="${POSE_PIPELINE_OUTPUT_DIR:-app/yolo_model/artifacts/pose}"
 
   if [[ -z "${YOLO_HIGHLIGHT_WEIGHTS:-}" ]]; then

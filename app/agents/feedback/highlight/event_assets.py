@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from PIL import Image
+
 from agents.feedback.highlight.event_extractor import HighlightEvent
 from agents.feedback.highlight.ffmpeg_batch import sample_range_uniform
 from agents.feedback.highlight.probe import ProbeSample
@@ -52,6 +54,8 @@ class EventAssets:
     frame_paths: list[Path] = field(default_factory=list)
     frame_timestamps: list[float] = field(default_factory=list)
     frame_bboxes: list[Optional[dict[str, float]]] = field(default_factory=list)
+    player_crops_dir: Optional[Path] = None
+    player_crop_paths: list[Path] = field(default_factory=list)
     clip_path: Optional[Path] = None
     clip_mode: str = "none"             # "copy" | "reencode" | "none"
     annotated_dir: Optional[Path] = None
@@ -215,6 +219,38 @@ def _nearest_probe_bbox(
     return box
 
 
+def _crop_player_from_bbox(
+    *,
+    image_path: Path,
+    bbox: dict[str, float],
+    output_path: Path,
+    pad_ratio: float = 0.15,
+) -> Optional[Path]:
+    """Crop the YOLO highlight bbox from a full-field frame (normalized x,y,w,h)."""
+    try:
+        img = Image.open(image_path).convert("RGB")
+    except OSError:
+        return None
+    width, height = img.size
+    x = float(bbox.get("x", 0.0))
+    y = float(bbox.get("y", 0.0))
+    bw = float(bbox.get("w", 0.0))
+    bh = float(bbox.get("h", 0.0))
+    if bw <= 0 or bh <= 0:
+        return None
+    pad_x = bw * pad_ratio
+    pad_y = bh * pad_ratio
+    left = max(0, int((x - pad_x) * width))
+    top = max(0, int((y - pad_y) * height))
+    right = min(width, int((x + bw + pad_x) * width))
+    bottom = min(height, int((y + bh + pad_y) * height))
+    if right <= left or bottom <= top:
+        return None
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    img.crop((left, top, right, bottom)).save(output_path, quality=92)
+    return output_path if output_path.is_file() else None
+
+
 def _annotate_frame(*, image_path: Path, output_path: Path, bbox: dict[str, float], label: str) -> Path:
     """Reuse the existing bbox drawer for consistency with the rest of the UI."""
     overlay_bbox = {
@@ -311,6 +347,19 @@ def build_event_assets(
             except OSError:
                 pass
 
+    player_crops_dir: Optional[Path] = None
+    player_crop_paths: list[Path] = []
+    if _truthy("VIDEO_HIGHLIGHT_EVENT_WRITE_PLAYER_CROPS", True):
+        player_crops_dir = event_dir / "player_crops"
+        player_crops_dir.mkdir(parents=True, exist_ok=True)
+        for path, box in zip(frame_paths, bboxes):
+            if not box:
+                continue
+            crop_path = player_crops_dir / f"crop_{path.stem}.jpg"
+            cropped = _crop_player_from_bbox(image_path=path, bbox=box, output_path=crop_path)
+            if cropped is not None:
+                player_crop_paths.append(cropped)
+
     annotated_dir: Optional[Path] = None
     annotated_paths: list[Path] = []
     if _truthy("VIDEO_HIGHLIGHT_EVENT_WRITE_ANNOTATED", True):
@@ -354,6 +403,8 @@ def build_event_assets(
             for p, ts, box in zip(frame_paths, frame_timestamps, bboxes)
         ],
         "annotated_dir": annotated_dir.name if annotated_dir is not None else None,
+        "player_crops_dir": player_crops_dir.name if player_crops_dir is not None else None,
+        "player_crop_count": len(player_crop_paths),
     }
     meta_path = event_dir / "event_meta.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -368,12 +419,21 @@ def build_event_assets(
             surviving_ts.append(ts)
             surviving_boxes.append(box)
 
+    surviving_crops: list[Path] = []
+    if player_crops_dir is not None:
+        for p in surviving_paths:
+            crop_path = player_crops_dir / f"crop_{p.stem}.jpg"
+            if _jpeg_output_usable(crop_path):
+                surviving_crops.append(crop_path)
+
     return EventAssets(
         event=event,
         frames_dir=frames_dir,
         frame_paths=surviving_paths,
         frame_timestamps=surviving_ts,
         frame_bboxes=surviving_boxes,
+        player_crops_dir=player_crops_dir,
+        player_crop_paths=surviving_crops,
         clip_path=clip_path if mode != "none" and clip_path.exists() else None,
         clip_mode=mode,
         annotated_dir=annotated_dir,
@@ -411,6 +471,12 @@ def write_events_index(*, events: Sequence[EventAssets], base_dir: Path, duratio
                     if e.annotated_dir is not None
                     else None
                 ),
+                "player_crops_dir": (
+                    str(e.player_crops_dir.relative_to(base_dir))
+                    if e.player_crops_dir is not None
+                    else None
+                ),
+                "player_crop_count": len(e.player_crop_paths),
             }
             for e in events
         ],
