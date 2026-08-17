@@ -24,6 +24,7 @@ from backendapi.services.google_integration import (
 from backendapi.services.google_oauth import build_connect_url, exchange_code_for_tokens
 from backendapi.services.google_sheets import list_spreadsheet_tabs, list_user_sheets, read_sheet, update_sheet
 from backendapi.services.auth import create_user_session
+from backendapi.services.frontend_origin import frontend_public_origin
 
 router = APIRouter(prefix="/integrations/google", tags=["google-integrations"])
 ALLOWED_POLLING_INTERVAL_SECONDS = [30, 35, 60, 90, 120, 150, 180, 210, 240, 270, 300]
@@ -41,13 +42,14 @@ async def google_connect(
 async def google_callback(code: str, state: str, db: Session = Depends(get_db)) -> RedirectResponse:
     user_id, email, _ = exchange_code_for_tokens(code=code, state=state, db=db)
     session = create_user_session(user_id=int(user_id), db=db)
-    frontend = (os.getenv("FRONTEND_BASE_URL") or "http://localhost:3000").rstrip("/")
+    frontend = frontend_public_origin()
+    cookie_secure = frontend.startswith("https://")
     response = RedirectResponse(url=f"{frontend}/sheets")
     response.set_cookie(
         key="session_id",
         value=session.session_id,
         httponly=True,
-        secure=False,
+        secure=cookie_secure,
         samesite="lax",
         max_age=60 * 60 * 24 * 30,
     )
@@ -55,7 +57,7 @@ async def google_callback(code: str, state: str, db: Session = Depends(get_db)) 
         key="session_email",
         value=email,
         httponly=False,
-        secure=False,
+        secure=cookie_secure,
         samesite="lax",
         max_age=60 * 60 * 24 * 30,
     )

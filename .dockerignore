@@ -13,6 +13,9 @@
 .venv-app
 .venv-agents
 venv
+**/venv
+**/.venv
+app/backendapi/venv
 node_modules
 agentic-frontend
 agent-transcripts

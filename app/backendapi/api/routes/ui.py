@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
+
+from backendapi.services.frontend_origin import frontend_public_origin
 
 router = APIRouter()
 
 
 def _frontend_base() -> str:
-    return (os.getenv("FRONTEND_BASE_URL") or "http://localhost:3000").rstrip("/")
+    return frontend_public_origin()
 
 
 def _redirect(path: str) -> RedirectResponse:

@@ -8,6 +8,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from backendapi.models.auth import AdminSession, AppSession, UserAccount
+from backendapi.services.frontend_origin import frontend_public_origin
 
 # Use PBKDF2 to avoid bcrypt backend issues on Python 3.13
 # and bcrypt's 72-byte password limitation.
@@ -84,7 +85,10 @@ def create_admin_session(email: str, db: Session) -> AdminSession:
 def admin_session_cookie_kwargs() -> dict[str, object]:
     """Cookie flags for admin session (same-site vs cross-origin HTTPS)."""
     secure_raw = (os.getenv("ADMIN_SESSION_COOKIE_SECURE") or "").strip().lower()
-    secure = secure_raw in ("1", "true", "yes")
+    if secure_raw:
+        secure = secure_raw in ("1", "true", "yes")
+    else:
+        secure = frontend_public_origin().startswith("https://")
     samesite = (os.getenv("ADMIN_SESSION_COOKIE_SAMESITE") or "lax").strip().lower()
     if samesite not in ("lax", "strict", "none"):
         samesite = "lax"

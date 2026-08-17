@@ -1,20 +1,30 @@
-"""User-facing feedback agent URLs (review player, job status) via the platform origin."""
+"""User-facing feedback review URLs (opened in the Next.js frontend)."""
 
 from __future__ import annotations
 
 import os
 
+from backendapi.services.frontend_origin import frontend_public_origin, parse_frontend_origins
+
+
+def _first_origin(raw: str) -> str | None:
+    first = (raw or "").split(",")[0].strip().rstrip("/")
+    return first or None
+
 
 def feedback_public_base_url() -> str | None:
     """Public origin for browser links (no trailing slash).
 
-    Prefer FEEDBACK_PUBLIC_BASE_URL on the platform app (RunPod :8000 proxy).
-    Falls back to PUBLIC_BASE_URL when set on the feedback agent host.
+    Prefer FRONTEND_BASE_URL — Next.js serves /review, /jobs, and /share and
+    rewrites them to the API. FEEDBACK_PUBLIC_BASE_URL / PUBLIC_BASE_URL are
+    fallbacks for older :8000-only deploys.
     """
+    if parse_frontend_origins(os.getenv("FRONTEND_BASE_URL") or ""):
+        return frontend_public_origin()
     for key in ("FEEDBACK_PUBLIC_BASE_URL", "PUBLIC_BASE_URL"):
-        raw = (os.getenv(key) or "").strip().rstrip("/")
-        if raw:
-            return raw
+        origin = _first_origin(os.getenv(key) or "")
+        if origin:
+            return origin
     return None
 
 

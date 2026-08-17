@@ -1,7 +1,8 @@
 """Proxy user-facing feedback-agent routes through the platform API (port 8000).
 
-Browsers hit RunPod :8000; server-to-server calls still use FEEDBACK_AGENT_BASE_URL (:5055).
-Set FEEDBACK_PUBLIC_BASE_URL to the public :8000 origin so generated links match this proxy.
+The Next.js frontend (:3000) rewrites /review, /jobs, /share, /api/reviews here.
+Server-to-server calls still use FEEDBACK_AGENT_BASE_URL (:5055).
+Share/review links should use FRONTEND_BASE_URL, not this API origin.
 """
 
 from __future__ import annotations

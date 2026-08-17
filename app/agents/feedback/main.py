@@ -36,10 +36,33 @@ REVIEWS_DIR = DATA_DIR / "reviews"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
 
+def _first_origin(raw: str) -> str | None:
+    first = (raw or "").split(",")[0].strip().rstrip("/")
+    return first or None
+
+
+def _frontend_origin() -> str | None:
+    """Next.js origin for share/review links. Prefers https, then a non-localhost host."""
+    parts = [
+        part.strip().rstrip("/")
+        for part in (os.getenv("FRONTEND_BASE_URL") or "").split(",")
+        if part.strip()
+    ]
+    if not parts:
+        return None
+    https = [origin for origin in parts if origin.startswith("https://")]
+    if https:
+        return https[0]
+    for origin in parts:
+        host = origin.split("://", 1)[-1].split("/")[0].split(":")[0]
+        if host not in {"localhost", "127.0.0.1"}:
+            return origin
+    return parts[0]
+
+
 def _public_origin() -> str | None:
     """Configured public origin (scheme + host[+port]) without trailing slash, or None."""
-    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-    return base or None
+    return _first_origin(os.getenv("PUBLIC_BASE_URL") or "")
 
 
 def _rewrite_origin(url: str) -> str:
@@ -77,15 +100,14 @@ def _public_url_for(request: Request, name: str, **path_params: Any) -> str:
 
 
 def _public_review_url(review_id: str) -> str:
-    """Build the user-facing /review/{id} URL.
+    """Build the user-facing /review/{id} URL on the frontend host.
 
-    Prefers PUBLIC_BASE_URL (recommended for any deployed server). Falls back to
-    HOST:PORT only for local dev — that fallback will be unreachable from remote
-    browsers, so we warn loudly at startup when it's the only choice.
+    Prefers FRONTEND_BASE_URL (Next.js, e.g. :3000), then PUBLIC_BASE_URL.
+    Falls back to HOST:PORT only for local dev.
     """
-    public_base = _public_origin()
-    if public_base:
-        return f"{public_base}/review/{review_id}"
+    origin = _frontend_origin() or _public_origin()
+    if origin:
+        return f"{origin}/review/{review_id}"
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "5055"))
     return f"http://{host}:{port}/review/{review_id}"
@@ -94,12 +116,12 @@ def _public_review_url(review_id: str) -> str:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ensure_directories()
-    if not os.getenv("PUBLIC_BASE_URL", "").strip():
+    if not _frontend_origin() and not os.getenv("PUBLIC_BASE_URL", "").strip():
         print(
-            "[feedback-agent] WARNING: PUBLIC_BASE_URL is not set. "
+            "[feedback-agent] WARNING: FRONTEND_BASE_URL is not set. "
             "Share/review links will use HOST:PORT (default 127.0.0.1:5055) and will not "
-            "work from a user's browser on a deployed server. Set PUBLIC_BASE_URL in your "
-            "environment (e.g. http://your-server-host:5055 or https://feedback.yourdomain.com).",
+            "open on the Next.js frontend. Set FRONTEND_BASE_URL to the frontend origin "
+            "(e.g. http://localhost:3000 or http://YOUR_VM_IP:3000).",
             file=sys.stderr,
             flush=True,
         )
@@ -148,6 +170,15 @@ def _absolute_url(request: Request, path: str) -> str:
         return f"{public_base}{path if path.startswith('/') else '/' + path}"
     base = str(request.base_url).rstrip("/")
     return f"{base}{path if path.startswith('/') else '/' + path}"
+
+
+def _viewer_url(request: Request, path: str) -> str:
+    """Share/review URLs that users open in the browser (Next.js host)."""
+    origin = _frontend_origin()
+    normalized = path if path.startswith("/") else f"/{path}"
+    if origin:
+        return f"{origin}{normalized}"
+    return _absolute_url(request, normalized)
 
 
 def _build_manual_context_sequence(
@@ -518,12 +549,20 @@ async def review_page(request: Request, review_id: str) -> HTMLResponse:
     review = _normalize_review(review)
     calibration = load_json(_calibration_path(review_id))
     share_url = None
+    share_path = None
     if review.get("share_token"):
         share_path = f"/share/{review['share_token']}"
-        share_url = _absolute_url(request, share_path)
+        share_url = _viewer_url(request, share_path)
     return TEMPLATES.TemplateResponse(
         "review.html",
-        {"request": request, "review": review, "calibration": calibration, "share_url": share_url},
+        {
+            "request": request,
+            "review": review,
+            "calibration": calibration,
+            "share_url": share_url,
+            "share_path": share_path,
+            "frontend_origin": _frontend_origin() or "",
+        },
     )
 
 
@@ -580,7 +619,13 @@ async def create_share_link(request: Request, review_id: str) -> JSONResponse:
         review["share_token"] = secrets.token_urlsafe(24)
         save_json(_review_path(review_id), review)
     share_path = f"/share/{review['share_token']}"
-    return JSONResponse({"ok": True, "share_url": _absolute_url(request, share_path)})
+    return JSONResponse(
+        {
+            "ok": True,
+            "share_path": share_path,
+            "share_url": _viewer_url(request, share_path),
+        }
+    )
 
 
 @app.delete("/api/reviews/{review_id}/markers")

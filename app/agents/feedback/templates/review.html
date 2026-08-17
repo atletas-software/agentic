@@ -433,7 +433,7 @@
       }
     </style>
   </head>
-  <body>
+  <body data-frontend-origin="{{ frontend_origin | default('') }}">
     <main class="workspace">
       <header class="workspace-header">
         <div class="workspace-title">
@@ -601,6 +601,28 @@
       const shareBtn = document.getElementById("share-btn");
       const shareUrl = document.getElementById("share-url");
       const shareStatus = document.getElementById("share-status");
+
+      function shareLinkForCurrentHost(apiShareUrl, sharePath) {
+        let path = (sharePath || "").trim();
+        if (!path && apiShareUrl) {
+          try {
+            path = new URL(apiShareUrl, window.location.origin).pathname;
+          } catch (_err) {
+            path = "";
+          }
+        }
+        if (!path) return apiShareUrl || "";
+        if (!path.startsWith("/")) path = `/${path}`;
+        const port = window.location.port;
+        const onApiHost = port === "8000" || port === "5055";
+        const configured = (document.body.dataset.frontendOrigin || "").replace(/\/$/, "");
+        const origin = onApiHost ? (configured || window.location.origin) : window.location.origin;
+        return `${origin}${path}`;
+      }
+
+      if (shareUrl.value) {
+        shareUrl.value = shareLinkForCurrentHost(shareUrl.value, {{ share_path | tojson }});
+      }
       const markerList = document.getElementById("marker-list");
       const detailPanel = document.getElementById("marker-detail");
       const detailTitle = document.getElementById("detail-title");
@@ -849,8 +871,8 @@
           const response = await fetch(`/api/reviews/${review.id}/share`, { method: "POST" });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "Unable to create share link.");
-          shareUrl.value = data.share_url;
-          await navigator.clipboard?.writeText(data.share_url);
+          shareUrl.value = shareLinkForCurrentHost(data.share_url, data.share_path);
+          await navigator.clipboard?.writeText(shareUrl.value);
           shareStatus.textContent = "Copied.";
         } catch (error) {
           shareStatus.textContent = error.message || "Unable to create share link.";

@@ -341,9 +341,10 @@ These apply to the **feedback agent process** (or its container). At startup the
 | `OPENAI_API_KEY` | **Yes** (for reviews) | Used by `openai_service` for storyboard and manual feedback |
 | `OPENAI_MODEL` | No | `gpt-4.1-mini` |
 | `DATA_DIR` | No | Defaults to `app/agents/feedback/data` under the package (persistent review storage) |
-| `HOST` | No | `127.0.0.1` (used when building `review_url` in job payload if `PUBLIC_BASE_URL` unset) |
+| `HOST` | No | `127.0.0.1` (used when building `review_url` if `FRONTEND_BASE_URL` and `PUBLIC_BASE_URL` are unset) |
 | `PORT` | No | `5055` (match the port you pass to `uvicorn`) |
-| `PUBLIC_BASE_URL` | No | If set (no trailing slash), share links and `review_url` use this origin instead of `http://HOST:PORT` |
+| `FRONTEND_BASE_URL` | Recommended | Next.js origin for share/review links (e.g. `http://localhost:3000` or `http://VM_IP:3000`). Docker also loads this from `app/backendapi/.env`. |
+| `PUBLIC_BASE_URL` | No | Fallback origin if `FRONTEND_BASE_URL` is unset |
 
 **System dependency:** `ffmpeg` must be installed on the host (or in the agent Docker image) for video frame extraction.
 

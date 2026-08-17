@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backendapi.api.routes.auth import router as auth_router
@@ -20,15 +18,12 @@ from backendapi.models import google_oauth  # noqa: F401
 from backendapi.models import auth as auth_models  # noqa: F401
 from backendapi.models import workspace as workspace_models  # noqa: F401
 from backendapi.api.routes.player_memory import router as player_memory_router
+from backendapi.services.frontend_origin import frontend_cors_origins
 from backendapi.services.sync_scheduler import SyncScheduler
 
 ensure_env_loaded()
 
-_frontend_origins = [
-    o.strip()
-    for o in (os.getenv("FRONTEND_BASE_URL") or "http://localhost:3000").split(",")
-    if o.strip()
-]
+_frontend_origins = frontend_cors_origins()
 
 app = FastAPI(title="Athlete Agent API", version="0.1.0")
 app.add_middleware(

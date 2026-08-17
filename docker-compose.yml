@@ -88,6 +88,7 @@ services:
       dockerfile: app/agents/feedback/Dockerfile
     container_name: athlete-agent-feedback
     env_file:
+      - app/backendapi/.env
       - app/agents/.env
     environment:
       PYTHONPATH: /app
