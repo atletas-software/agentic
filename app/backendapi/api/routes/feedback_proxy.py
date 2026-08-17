@@ -57,8 +57,25 @@ async def proxy_api_reviews(request: Request, path: str) -> Response:
     return await _proxy(request, f"api/reviews/{path}")
 
 
+@router.api_route("/reviews", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_reviews_root_stripped(request: Request) -> Response:
+    """Same as /api/reviews when a reverse proxy strips the /api prefix."""
+    return await _proxy(request, "api/reviews")
+
+
+@router.api_route("/reviews/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_reviews_stripped(request: Request, path: str) -> Response:
+    """Same as /api/reviews/... when a reverse proxy strips the /api prefix."""
+    return await _proxy(request, f"api/reviews/{path}")
+
+
 @router.api_route("/api/pose-markers", methods=["POST", "OPTIONS"])
 async def proxy_pose_markers(request: Request) -> Response:
+    return await _proxy(request, "api/pose-markers")
+
+
+@router.api_route("/pose-markers", methods=["POST", "OPTIONS"])
+async def proxy_pose_markers_stripped(request: Request) -> Response:
     return await _proxy(request, "api/pose-markers")
 
 
