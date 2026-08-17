@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import tempfile
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -59,6 +62,11 @@ from backendapi.services.agent_job_cancel import (
 )
 from backendapi.services.sync_queue import get_redis
 from backendapi.workers.workspace_worker import feedback_agent_poll_progress_hint
+from backendapi.services.gcs_video_storage import (
+    GcsVideoStorageError,
+    gcs_feedback_video_max_bytes,
+    upload_feedback_video,
+)
 
 router = APIRouter(prefix="/admin-api", tags=["admin"])
 
@@ -926,6 +934,7 @@ async def admin_list_external_profiles(
                     COALESCE(first_name, ''), ' ',
                     COALESCE(last_name, ''), ' ',
                     COALESCE(email, ''), ' ',
+                    COALESCE(SUBSTRING_INDEX(email, '@', 1), ''), ' ',
                     CAST(id AS CHAR)
                 )) LIKE :pat
                 ORDER BY id DESC
@@ -991,6 +1000,88 @@ def _lookup_sportal_profile_by_id(db: Session, player_id: int) -> dict[str, Any]
     if row is None:
         return None
     return _normalize_external_profile_row(dict(row))
+
+
+def _lookup_sportal_profiles_by_query(db: Session, query: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Resolve Sportal profiles by player ID, email, username (email local-part), or name."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    eng, raw_db_url = _sportal_sql_engine(db)
+    if not raw_db_url:
+        raise HTTPException(
+            status_code=400,
+            detail="MySQL URL is not configured. Set it in SQL & settings before syncing players.",
+        )
+    if eng is None:
+        raise HTTPException(status_code=400, detail="Invalid MySQL URL in player memory settings.")
+
+    is_id = q.isdigit()
+    pid = int(q) if is_id else 0
+    exact = q.lower()
+    pat = f"%{exact}%"
+    try:
+        with eng.connect() as conn:
+            res = conn.execute(
+                text(
+                    """
+                SELECT id AS player_id, first_name, last_name, email
+                FROM sportal.profile
+                WHERE
+                    (:is_id = 1 AND id = :pid)
+                    OR LOWER(TRIM(COALESCE(email, ''))) = :exact
+                    OR LOWER(SUBSTRING_INDEX(COALESCE(email, ''), '@', 1)) = :exact
+                    OR LOWER(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')))) = :exact
+                    OR LOWER(CONCAT(
+                        COALESCE(first_name, ''), ' ',
+                        COALESCE(last_name, ''), ' ',
+                        COALESCE(email, ''), ' ',
+                        CAST(id AS CHAR)
+                    )) LIKE :pat
+                ORDER BY
+                    CASE
+                        WHEN :is_id = 1 AND id = :pid THEN 0
+                        WHEN LOWER(TRIM(COALESCE(email, ''))) = :exact THEN 1
+                        WHEN LOWER(SUBSTRING_INDEX(COALESCE(email, ''), '@', 1)) = :exact THEN 2
+                        WHEN LOWER(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')))) = :exact THEN 3
+                        ELSE 4
+                    END,
+                    id DESC
+                LIMIT :lim
+                """
+                ),
+                {
+                    "is_id": 1 if is_id else 0,
+                    "pid": pid,
+                    "exact": exact,
+                    "pat": pat,
+                    "lim": limit,
+                },
+            )
+            rows = [dict(row) for row in res.mappings()]
+    except OperationalError as exc:
+        _raise_sportal_db_http_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        _raise_sportal_db_http_error(exc)
+    return [_normalize_external_profile_row(row) for row in rows]
+
+
+@router.get("/player-memory/sportal-lookup")
+async def admin_lookup_sportal_player(
+    q: str = Query(..., min_length=1, max_length=200),
+    _admin: dict = Depends(get_admin_session_context),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Find Sportal players by ID, email, username, or name before SQL → vector sync."""
+    profiles = _lookup_sportal_profiles_by_query(db, q, limit=8)
+    if not profiles:
+        return {
+            "ok": False,
+            "reason": "player_not_found",
+            "detail": f'No Sportal player matched "{q.strip()}". Try ID, email, username, or full name.',
+            "profiles": [],
+        }
+    return {"ok": True, "profiles": profiles, "unique": len(profiles) == 1}
 
 
 @router.get("/player-memory/sportal-player/{player_id}")
@@ -1391,6 +1482,7 @@ class AdminAgentsFeedbackReviewBody(BaseModel):
     coaching_focus: str = ""
     first_name: str = ""
     last_name: str = ""
+    highlight_detector: str = Field(default="", max_length=32)
 
 
 class AdminAgentsEmbedFeedbackBody(BaseModel):
@@ -1452,6 +1544,7 @@ def _feedback_review_job_payload(body: AdminAgentsFeedbackReviewBody, *, db: Ses
         "player_key": pk,
         "first_name": (body.first_name or "").strip(),
         "last_name": (body.last_name or "").strip(),
+        "highlight_detector": (body.highlight_detector or "").strip().lower(),
     }
 
 
@@ -1769,6 +1862,65 @@ async def agents_lab_feedback_jobs(
             for j in jobs
         ],
     }
+
+
+@router.post("/agents-lab/video-upload")
+async def agents_lab_video_upload(
+    file: UploadFile = File(...),
+    _admin: dict = Depends(get_admin_session_context),
+) -> dict[str, Any]:
+    """Store an uploaded match video in GCS and return an HTTPS URL for the feedback pipeline."""
+    filename = (file.filename or "video.mp4").strip() or "video.mp4"
+    content_type = (file.content_type or "").strip() or None
+    max_bytes = gcs_feedback_video_max_bytes()
+    suffix = Path(filename).suffix or ".mp4"
+    written = 0
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="agent-lab-video-", suffix=suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Video exceeds max size of {max_bytes} bytes.",
+                    )
+                tmp.write(chunk)
+        if written <= 0:
+            raise HTTPException(status_code=400, detail="Uploaded video is empty.")
+        if not tmp_path:
+            raise HTTPException(status_code=500, detail="Video upload temp file was not created.")
+        upload_path = tmp_path
+
+        def _upload() -> dict[str, Any]:
+            with open(upload_path, "rb") as fh:
+                return upload_feedback_video(
+                    fh,
+                    filename=filename,
+                    content_type=content_type,
+                    size_bytes=written,
+                )
+
+        result = await asyncio.to_thread(_upload)
+    except HTTPException:
+        raise
+    except GcsVideoStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Video upload failed: {exc}") from exc
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        await file.close()
+
+    return {"success": True, **result}
 
 
 @router.post("/agents-lab/feedback-reviews")

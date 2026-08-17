@@ -234,6 +234,7 @@ def _build_feedback_delegate_body(
         "coaching_prompt": coaching,
         "first_name": str(payload.get("first_name") or "").strip(),
         "last_name": str(payload.get("last_name") or "").strip(),
+        "highlight_detector": str(payload.get("highlight_detector") or "").strip(),
     }
 
     memory_workspace_id = _admin_memory_workspace_id(db)

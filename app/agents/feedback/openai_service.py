@@ -54,6 +54,175 @@ class _CoachingNoteRewrite(BaseModel):
     coaching_note: str = Field(max_length=2500)
 
 
+class OpenAIPickedMoment(BaseModel):
+    timestamp_sec: float = Field(ge=0)
+    importance: Literal["high", "medium", "low"] = "medium"
+    action: str = Field(default="", max_length=240)
+    why: str = Field(default="", max_length=800)
+
+
+class OpenAIMomentPickOutput(BaseModel):
+    moments: list[OpenAIPickedMoment] = Field(default_factory=list)
+
+
+_IMPORTANCE_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def merge_openai_picked_moments(
+    moments: list[OpenAIPickedMoment] | list[dict[str, Any]],
+    *,
+    min_gap_sec: float = 3.0,
+    max_moments: int = 10,
+) -> list[OpenAIPickedMoment]:
+    """Keep the most important moments, dropping near-duplicates."""
+    parsed: list[OpenAIPickedMoment] = []
+    for item in moments:
+        if isinstance(item, OpenAIPickedMoment):
+            parsed.append(item)
+            continue
+        try:
+            parsed.append(OpenAIPickedMoment.model_validate(item))
+        except Exception:  # noqa: BLE001
+            continue
+    parsed.sort(
+        key=lambda m: (_IMPORTANCE_RANK.get(m.importance, 9), m.timestamp_sec),
+    )
+    kept: list[OpenAIPickedMoment] = []
+    for moment in parsed:
+        if any(abs(moment.timestamp_sec - other.timestamp_sec) < min_gap_sec for other in kept):
+            continue
+        kept.append(moment)
+        if len(kept) >= max(1, max_moments):
+            break
+    kept.sort(key=lambda m: m.timestamp_sec)
+    return kept
+
+
+def select_coaching_moments_from_frames(
+    *,
+    frames: list[FrameAsset],
+    player_focus: str,
+    sport: str,
+    duration_sec: float,
+    coaching_focus: str | None = None,
+    player_memory_context: str | None = None,
+    batch_size: int = 16,
+    min_gap_sec: float = 3.0,
+    max_moments: int = 10,
+) -> tuple[list[OpenAIPickedMoment], dict[str, Any]]:
+    """Pass 1: OpenAI vision picks coaching-worthy timestamps from sampled stills."""
+    debug: dict[str, Any] = {
+        "outcome": "pending",
+        "frames_offered": len(frames),
+        "batches": 0,
+        "raw_moment_count": 0,
+    }
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        debug["outcome"] = "error"
+        debug["error"] = "OPENAI_API_KEY_missing"
+        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your environment or .env file.")
+    if not frames:
+        debug["outcome"] = "skipped"
+        debug["reason"] = "no_frames"
+        return [], debug
+
+    model = (
+        os.getenv("VIDEO_OPENAI_MOMENT_MODEL")
+        or os.getenv("VIDEO_CIRCLE_SEGMENT_VISION_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or "gpt-4.1-mini"
+    ).strip()
+    client = OpenAI(api_key=api_key)
+    chunk = max(4, int(batch_size or 16))
+    raw: list[OpenAIPickedMoment] = []
+    batch_debug: list[dict[str, Any]] = []
+
+    for start in range(0, len(frames), chunk):
+        batch = frames[start : start + chunk]
+        t0 = batch[0].timestamp_sec
+        t1 = batch[-1].timestamp_sec
+        user_parts: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    f"Sport: {sport or 'Soccer'}. Player to coach: {player_focus or 'the focal athlete'}.\n"
+                    f"Video duration: {duration_sec:.1f}s. These stills cover about {t0:.1f}s–{t1:.1f}s.\n"
+                    "Each image is labeled with its timestamp. Pick the most useful coaching moments "
+                    "for THIS player (on or off the ball): 1v1s, receives, scans, press, support angles, "
+                    "decisions, finishing, defensive actions.\n"
+                    "Do not pick moments just because a red circle is present. Ignore other players unless "
+                    "the focal player is involved.\n"
+                    "Return 0–5 moments. timestamp_sec must match a labeled frame time (or very close). "
+                    "If the focal player is not visible in this batch, return an empty moments list."
+                ),
+            }
+        ]
+        cf = (coaching_focus or "").strip()
+        if cf:
+            user_parts.append({"type": "text", "text": f"Session direction from the coach: {cf[:800]}"})
+        mem = (player_memory_context or "").strip()
+        if mem:
+            user_parts.append(
+                {
+                    "type": "text",
+                    "text": "Player memory (style/themes only, do not invent events):\n" + mem[:4000],
+                }
+            )
+        for frame in batch:
+            user_parts.append({"type": "text", "text": f"Frame t={frame.timestamp_sec:.2f}s"})
+            user_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{_encode_image(frame.image_path)}"},
+                }
+            )
+        batch_meta: dict[str, Any] = {
+            "t_lo": t0,
+            "t_hi": t1,
+            "frame_count": len(batch),
+            "outcome": "pending",
+        }
+        try:
+            response = client.responses.parse(
+                model=model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a youth soccer coach selecting clip timestamps for later tactical feedback. "
+                            "Only choose moments that will teach the named player something specific."
+                        ),
+                    },
+                    {"role": "user", "content": user_parts},
+                ],
+                text_format=OpenAIMomentPickOutput,
+            )
+            parsed = response.output_parsed
+            found = list(parsed.moments) if parsed else []
+            raw.extend(found)
+            batch_meta["outcome"] = "success"
+            batch_meta["moment_count"] = len(found)
+        except Exception as exc:  # noqa: BLE001
+            batch_meta["outcome"] = "error"
+            batch_meta["error"] = str(exc)[:500]
+        batch_debug.append(batch_meta)
+
+    merged = merge_openai_picked_moments(raw, min_gap_sec=min_gap_sec, max_moments=max_moments)
+    debug.update(
+        {
+            "outcome": "success" if merged else "empty",
+            "model": model,
+            "batches": len(batch_debug),
+            "raw_moment_count": len(raw),
+            "kept_moment_count": len(merged),
+            "batch_debug": batch_debug,
+            "kept_timestamps": [round(m.timestamp_sec, 2) for m in merged],
+        }
+    )
+    return merged, debug
+
+
 class ManualMomentFeedback(BaseModel):
     action_type: Literal[
         "shot",
@@ -362,8 +531,11 @@ def vision_analyze_circle_segment(
     coaching_focus: str | None = None,
     player_memory_context: str | None = None,
     shared_context: str | None = None,
+    finder: str = "circle",
+    moment_action: str | None = None,
+    moment_why: str | None = None,
 ) -> tuple[CircleSegmentVisionOutput, dict[str, Any]]:
-    """Single vision parse for one episode: stills cover pre-circle, visible span, and post-circle."""
+    """Single vision parse for one episode window (circled highlight or OpenAI-picked action)."""
     debug: dict[str, Any] = {
         "segment_index": segment_index,
         "segment_total": segment_total,
@@ -389,13 +561,26 @@ def vision_analyze_circle_segment(
     mem_limit = int((os.getenv("FEEDBACK_SEGMENT_MEMORY_MAX_CHARS") or "12000").strip() or "12000")
     org_limit = int((os.getenv("FEEDBACK_SEGMENT_SHARED_MAX_CHARS") or "12000").strip() or "12000")
 
-    user_lines = [
-        "Analyze still frames from one continuous time window of a soccer performance clip.",
-        f"Sport: {sport or 'Soccer'}. Player focus: {player_focus or 'the athlete circled in red when visible'}.",
-        f"Episode {segment_index} of {segment_total}: red highlight circle visibility is approximately {t_on:.2f}s–{t_off:.2f}s.",
-        f"Frames span {t_lo:.2f}s through {t_hi:.2f}s (includes ~{t_lo:.2f}s–{t_on:.2f}s before the circle reliably appears, the span while it is on, and ~{t_off:.2f}s–{t_hi:.2f}s after it disappears).",
-        "Images are chronological. The red circle may only appear on some middle frames.",
-    ]
+    if (finder or "circle").strip().lower() in {"openai", "gpt", "vision"}:
+        user_lines = [
+            "Analyze still frames from one coaching window of a soccer clip (no red-circle overlay is required).",
+            f"Sport: {sport or 'Soccer'}. Player focus: {player_focus or 'the named athlete'}.",
+            f"Episode {segment_index} of {segment_total}: action window {t_on:.2f}s–{t_off:.2f}s.",
+            f"Frames span {t_lo:.2f}s through {t_hi:.2f}s (a little before, the action, and a little after).",
+            "Images are chronological. Coach the named player only.",
+        ]
+        if (moment_action or "").strip():
+            user_lines.append(f"Suggested action label from the moment picker: {moment_action.strip()}")
+        if (moment_why or "").strip():
+            user_lines.append(f"Why this window was picked: {moment_why.strip()}")
+    else:
+        user_lines = [
+            "Analyze still frames from one continuous time window of a soccer performance clip.",
+            f"Sport: {sport or 'Soccer'}. Player focus: {player_focus or 'the athlete circled in red when visible'}.",
+            f"Episode {segment_index} of {segment_total}: red highlight circle visibility is approximately {t_on:.2f}s–{t_off:.2f}s.",
+            f"Frames span {t_lo:.2f}s through {t_hi:.2f}s (includes ~{t_lo:.2f}s–{t_on:.2f}s before the circle reliably appears, the span while it is on, and ~{t_off:.2f}s–{t_hi:.2f}s after it disappears).",
+            "Images are chronological. The red circle may only appear on some middle frames.",
+        ]
     cf = (coaching_focus or "").strip()
     mem = (player_memory_context or "").strip()
     org = (shared_context or "").strip()

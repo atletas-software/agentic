@@ -8,6 +8,7 @@ from typing import Any, Optional
 from agents.feedback.models import ReviewMoment, VideoFeedbackReview, VideoSummary
 from agents.feedback.openai_service import (
     analyze_storyboards,
+    select_coaching_moments_from_frames,
     summarize_highlight_windows_for_feedback,
     synthesize_overall_from_circle_segments,
     vision_analyze_circle_segment,
@@ -83,11 +84,293 @@ def _subsample_frame_assets(assets: list[FrameAsset], max_n: int) -> list[FrameA
     return picked
 
 
-def _selected_detector() -> str:
-    raw = (os.getenv("VIDEO_HIGHLIGHT_DETECTOR") or "yolo").strip().lower()
+def _selected_detector(override: str | None = None) -> str:
+    raw = (override or os.getenv("VIDEO_HIGHLIGHT_DETECTOR") or "yolo").strip().lower()
+    if raw in {"openai", "gpt", "vision"}:
+        return "openai"
     if raw in {"yolo", "yolov8"}:
         return "yolo"
-    return "hsv"
+    if raw in {"hsv"}:
+        return "hsv"
+    return "yolo"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or str(default)).strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _try_openai_segment_review(
+    *,
+    review_id: str,
+    video_url: str,
+    base_dir: Path,
+    storyboards_dir: Path,
+    sport: str,
+    player_focus: str,
+    analysis_scope: str,
+    coaching_focus: str,
+    player_memory_context: str | None,
+    shared_context: str | None,
+    player_memory_retrieval_debug: dict[str, Any] | None,
+    shared_context_sheet_debug: dict[str, Any] | None,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> dict | None:
+    """Sample the clip, let OpenAI pick action windows, then OpenAI writes coaching."""
+    duration_sec = probe_duration(video_url)
+    _raise_if_cancelled(cancel_check)
+    max_probe = max(8, _env_int("VIDEO_OPENAI_PROBE_MAX_FRAMES", 48))
+    probe_width = max(320, _env_int("VIDEO_OPENAI_PROBE_FRAME_WIDTH", 640))
+    pad = max(0.5, _env_float("VIDEO_OPENAI_WINDOW_PAD_SEC", 2.0))
+    window_frames = max(4, _env_int("VIDEO_OPENAI_WINDOW_FRAMES", 8))
+    window_width = max(320, _env_int("VIDEO_OPENAI_WINDOW_FRAME_WIDTH", 720))
+    max_moments = max(1, _env_int("VIDEO_OPENAI_MAX_MOMENTS", 10))
+    min_gap = max(0.5, _env_float("VIDEO_OPENAI_MIN_GAP_SEC", 3.0))
+    batch_size = max(4, _env_int("VIDEO_OPENAI_MOMENT_BATCH_SIZE", 16))
+
+    if on_progress:
+        on_progress(
+            {
+                "phase": "openai_moment_probe",
+                "progress_detail": f"Sampling up to {max_probe} frames for OpenAI moment picking…",
+            }
+        )
+    probe_dir = base_dir / "openai_probes"
+    probe_frames = extract_uniform_frames_in_range(
+        video_url,
+        0.0,
+        duration_sec,
+        probe_dir,
+        "probe",
+        max_frames=max_probe,
+        frame_width=probe_width,
+        video_duration_sec=duration_sec,
+    )
+    _raise_if_cancelled(cancel_check)
+    if on_progress:
+        on_progress(
+            {
+                "phase": "openai_moment_pick",
+                "progress_detail": f"OpenAI selecting coaching moments from {len(probe_frames)} stills…",
+            }
+        )
+    picked, pick_debug = select_coaching_moments_from_frames(
+        frames=probe_frames,
+        player_focus=player_focus,
+        sport=sport,
+        duration_sec=duration_sec,
+        coaching_focus=coaching_focus,
+        player_memory_context=player_memory_context,
+        batch_size=batch_size,
+        min_gap_sec=min_gap,
+        max_moments=max_moments,
+    )
+    if not picked:
+        return None
+
+    vision_debug: list[dict[str, Any]] = []
+    episode_blocks: list[str] = []
+    moments: list[ReviewMoment] = []
+    used_ts: set[float] = set()
+    all_window_assets: list[FrameAsset] = []
+    segment_meta: list[dict[str, Any]] = []
+    total = len(picked)
+
+    for idx, moment in enumerate(picked, start=1):
+        _raise_if_cancelled(cancel_check)
+        t_on = max(0.0, float(moment.timestamp_sec) - 0.4)
+        t_off = min(duration_sec, float(moment.timestamp_sec) + 0.4)
+        t_lo = max(0.0, float(moment.timestamp_sec) - pad)
+        t_hi = min(duration_sec, float(moment.timestamp_sec) + pad)
+        if on_progress:
+            on_progress(
+                {
+                    "phase": "openai_moment_vision",
+                    "segment_total": total,
+                    "segment_current": idx,
+                    "progress_detail": f"Episode {idx}/{total}: coaching window at {moment.timestamp_sec:.1f}s…",
+                }
+            )
+        seg_dir = base_dir / "openai_windows" / f"seg_{idx:02d}"
+        assets = extract_uniform_frames_in_range(
+            video_url,
+            t_lo,
+            t_hi,
+            seg_dir,
+            f"seg{idx:02d}",
+            max_frames=window_frames,
+            frame_width=window_width,
+            video_duration_sec=duration_sec,
+        )
+        if not assets:
+            vision_debug.append({"event_index": idx, "outcome": "skipped", "reason": "no_frames"})
+            continue
+        all_window_assets.extend(assets)
+        vis_out, vdbg = vision_analyze_circle_segment(
+            frame_paths=[a.image_path for a in assets],
+            t_lo=t_lo,
+            t_on=t_on,
+            t_off=t_off,
+            t_hi=t_hi,
+            sport=sport,
+            player_focus=player_focus,
+            segment_index=idx,
+            segment_total=total,
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
+            finder="openai",
+            moment_action=moment.action,
+            moment_why=moment.why,
+        )
+        vdbg["picked_importance"] = moment.importance
+        vision_debug.append(vdbg)
+        episode_blocks.append(
+            "\n".join(
+                [
+                    f"### Episode {idx}/{total}  anchor≈{moment.timestamp_sec:.2f}s  "
+                    f"({moment.importance} — {moment.action or 'action'})",
+                    f"- pitch_location: {vis_out.pitch_location}",
+                    f"- category: {vis_out.category}",
+                    f"- sentiment: {vis_out.sentiment}",
+                    f"- coaching: {vis_out.coaching_note}",
+                ]
+            )
+        )
+        ts = round(float(moment.timestamp_sec), 2)
+        while ts in used_ts:
+            ts = round(ts + 0.05, 2)
+        used_ts.add(ts)
+        loc = (vis_out.pitch_location or "").strip()
+        note = (vis_out.coaching_note or "").strip()
+        display_note = f"Where on the pitch: {loc}\n\n{note}" if loc and loc.lower() not in note.lower() else note
+        moments.append(
+            ReviewMoment(
+                timestamp_sec=ts,
+                category=vis_out.category,
+                sentiment=vis_out.sentiment,
+                coaching_note=display_note,
+            )
+        )
+        segment_meta.append(
+            {
+                "index": idx,
+                "t_on": round(t_on, 3),
+                "t_off": round(t_off, 3),
+                "t_lo": round(t_lo, 3),
+                "t_hi": round(t_hi, 3),
+                "anchor_sec": round(float(moment.timestamp_sec), 3),
+                "importance": moment.importance,
+                "action": moment.action,
+                "why": moment.why,
+                "frame_count": len(assets),
+            }
+        )
+
+    if not moments:
+        return None
+
+    moments.sort(key=lambda m: m.timestamp_sec)
+    segments_markdown = "\n\n".join(episode_blocks)
+    if on_progress:
+        on_progress(
+            {
+                "phase": "openai_overall_synthesis",
+                "segment_total": total,
+                "segment_current": total,
+                "progress_detail": "Synthesizing overall assessment from OpenAI-picked windows…",
+            }
+        )
+    merged_assets = _merge_frame_assets_by_path(all_window_assets)
+    max_sb_frames = _env_int("VIDEO_CIRCLE_OVERALL_MAX_FRAMES_FOR_STORYBOARD", 48)
+    storyboard_source = _subsample_frame_assets(merged_assets, max_sb_frames)
+    storyboards = create_storyboards(storyboard_source, storyboards_dir)
+    _raise_if_cancelled(cancel_check)
+    prompt_text = (BASE_DIR / "video_feedback_agent_system_prompt.md").read_text(encoding="utf-8")
+    overall, overall_dbg = synthesize_overall_from_circle_segments(
+        prompt_tone=prompt_text,
+        sport=sport,
+        player_focus=player_focus,
+        duration_sec=duration_sec,
+        analysis_scope=analysis_scope,
+        coaching_focus=coaching_focus,
+        segments_markdown=segments_markdown,
+        storyboard_paths=storyboards,
+        player_memory_context=player_memory_context,
+        shared_context=shared_context,
+    )
+    review_payload = VideoFeedbackReview(
+        video_summary=VideoSummary(
+            sport=sport,
+            player_focus=player_focus,
+            duration_sec=duration_sec,
+            analysis_scope=analysis_scope,
+        ),
+        overall_assessment=overall,
+        moments=moments,
+    )
+    allowed_timestamps = [round(float(m.timestamp_sec), 2) for m in moments]
+    review = _to_review_document(
+        review_id=review_id,
+        video_url=video_url,
+        duration_sec=duration_sec,
+        review_payload=review_payload,
+        analysis_mode="openai-action-episodes",
+        allowed_timestamps=allowed_timestamps,
+    )
+    review["circle_segments"] = segment_meta
+    video_pre: dict[str, Any] = {
+        "tactical_pipeline_spec": "OpenAI vision moment picker (no YOLO)",
+        "detector": "openai",
+        "probe_frames": len(probe_frames),
+        "picked_moments": len(picked),
+        "frames_in_event_windows": len(merged_assets),
+        "frames_sent_to_storyboard": len(storyboard_source),
+        "storyboard_pages": len(storyboards),
+    }
+    cap_debug: dict[str, Any] = {
+        "mode": "openai-action-episodes",
+        "outcome": "success",
+        "segment_definitions": segment_meta,
+        "moment_pick": pick_debug,
+    }
+    llm_debug: dict[str, Any] = {
+        "analysis_kind": "openai-action-episodes",
+        "circle_segment_vision": vision_debug,
+        "circle_segment_overall": overall_dbg,
+        "moment_pick": pick_debug,
+    }
+    review["generation_debug"] = {
+        "analysis_kind": "openai-action-episodes",
+        "openai": llm_debug,
+        "shared_context_sheet": shared_context_sheet_debug,
+        "player_memory_vector_retrieval": player_memory_retrieval_debug,
+        "video_preprocess": video_pre,
+        "video_highlight_captions": cap_debug,
+    }
+    review["video_context"] = {
+        "description": (
+            "ffmpeg samples stills across the clip → OpenAI vision picks coaching-worthy timestamps "
+            "for the selected player → a second OpenAI vision pass writes tactical notes on each window."
+        ),
+        "combined_highlight_text": segments_markdown[:60_000],
+        "preprocess": video_pre,
+        "highlight_caption_pass": cap_debug,
+    }
+    save_json(base_dir / "review.json", review)
+    return review
 
 
 def _try_yolo_segment_review(
@@ -404,12 +687,31 @@ def _try_circle_segment_episode_review(
     cancel_check: Optional[Callable[[], bool]] = None,
     player_first_name: str | None = None,
     player_last_name: str | None = None,
+    highlight_detector: str | None = None,
 ) -> dict | None:
     """
     Timeline probe → contiguous circle visibility → per-episode window [t_on−pad, t_off+pad]
     → vision → one marker per episode + overall synthesis. Returns None to use legacy path.
     """
-    if _selected_detector() == "yolo":
+    detector = _selected_detector(highlight_detector)
+    if detector == "openai":
+        return _try_openai_segment_review(
+            review_id=review_id,
+            video_url=video_url,
+            base_dir=base_dir,
+            storyboards_dir=storyboards_dir,
+            sport=sport,
+            player_focus=player_focus,
+            analysis_scope=analysis_scope,
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
+            player_memory_retrieval_debug=player_memory_retrieval_debug,
+            shared_context_sheet_debug=shared_context_sheet_debug,
+            on_progress=on_progress,
+            cancel_check=cancel_check,
+        )
+    if detector == "yolo":
         yolo_review = _try_yolo_segment_review(
             review_id=review_id,
             video_url=video_url,
@@ -974,6 +1276,7 @@ def build_review(
     cancel_check: Optional[Callable[[], bool]] = None,
     player_first_name: str | None = None,
     player_last_name: str | None = None,
+    highlight_detector: str | None = None,
 ) -> dict:
     base_dir = DATA_DIR / "reviews" / review_id
     frames_dir = base_dir / "frames"
@@ -998,6 +1301,7 @@ def build_review(
             cancel_check=cancel_check,
             player_first_name=player_first_name,
             player_last_name=player_last_name,
+            highlight_detector=highlight_detector,
         )
         if seg_review is not None:
             return seg_review

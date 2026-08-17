@@ -341,7 +341,7 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             "video_url": payload["video_url"],
             "player_focus": payload.get("player_focus", ""),
             "sport": payload.get("sport", "Soccer"),
-            "mode": "yolo-highlight",
+            "mode": "openai-moments" if (payload.get("highlight_detector") or "").strip().lower() in {"openai", "gpt", "vision"} else "yolo-highlight",
             "error": None,
         },
     )
@@ -361,6 +361,7 @@ def _run_review_job(review_id: str, payload: Dict[str, Any]) -> None:
             cancel_check=lambda: review_cancel_requested(review_id),
             player_first_name=(payload.get("first_name") or "").strip() or None,
             player_last_name=(payload.get("last_name") or "").strip() or None,
+            highlight_detector=(payload.get("highlight_detector") or "").strip() or None,
         )
     except Exception as exc:  # noqa: BLE001
         job = _load_job(review_id) or {"id": review_id}
@@ -457,6 +458,7 @@ async def create_review(request: Request) -> JSONResponse:
         "pose_json_path": (payload.get("pose_json_path") or "").strip(),
         "use_pose_pipeline": bool(payload.get("use_pose_pipeline")),
         "use_legacy_review": bool(payload.get("use_legacy_review")),
+        "highlight_detector": (payload.get("highlight_detector") or "").strip(),
     }
     if text_only:
         runner = _run_text_coaching_job
