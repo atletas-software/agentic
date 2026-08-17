@@ -156,6 +156,8 @@ def _sync_structured_sql_rows(
             if wv and (watermark_max is None or wv > watermark_max):
                 watermark_max = wv
 
+    _upsert_sportal_directory(db=db, workspace_id=workspace_id, sp=sp, chunks_written=written)
+
     if not sp:
         if cursor is None:
             cursor = SqlSyncCursor(workspace_id=workspace_id, source_name="default")
@@ -179,7 +181,7 @@ def _sync_structured_sql_rows(
         out["bind_params_used"] = bind_used
     if cursor is not None and not sp:
         out["watermark"] = cursor.watermark_value
-    return out
+    return _mark_empty_single_player_sync(out, sp=sp, rows_len=len(rows))
 
 
 def _external_engine(database_url: str) -> Engine | None:
@@ -523,6 +525,8 @@ def sync_sql_context_for_workspace(
                 last_name=nm[1],
             )
 
+    _upsert_sportal_directory(db=db, workspace_id=workspace_id, sp=sp, chunks_written=written)
+
     if not sp:
         if cursor is None:
             cursor = SqlSyncCursor(workspace_id=workspace_id, source_name="default")
@@ -545,6 +549,54 @@ def sync_sql_context_for_workspace(
         out["bind_params_used"] = bind_used
     if cursor is not None and not sp:
         out["watermark"] = cursor.watermark_value
+    return _mark_empty_single_player_sync(out, sp=sp, rows_len=len(rows))
+
+
+def _upsert_sportal_directory(
+    *,
+    db: Session,
+    workspace_id: int,
+    sp: dict[str, Any] | None,
+    chunks_written: int,
+) -> None:
+    if not sp or chunks_written <= 0:
+        return
+    fn = str(sp.get("first_name") or "").strip()
+    ln = str(sp.get("last_name") or "").strip()
+    if not fn and not ln:
+        return
+    upsert_player_directory_entry(
+        db=db,
+        workspace_id=workspace_id,
+        player_key=str(int(sp["player_id"])),
+        first_name=fn,
+        last_name=ln,
+    )
+
+
+def _mark_empty_single_player_sync(
+    out: dict[str, Any],
+    *,
+    sp: dict[str, Any] | None,
+    rows_len: int,
+) -> dict[str, Any]:
+    if not sp:
+        return out
+    pid = str(int(sp["player_id"]))
+    fn = str(sp.get("first_name") or "").strip()
+    ln = str(sp.get("last_name") or "").strip()
+    out["player_key"] = pid
+    if fn or ln:
+        out["display_name"] = f"{fn} {ln}".strip()
+    if int(out.get("chunks_written") or 0) > 0:
+        return out
+    out["skipped"] = True
+    if not out.get("hint"):
+        out["hint"] = (
+            f"MySQL returned {rows_len} row(s) but 0 vector chunks were written for player {pid}. "
+            "They will not appear under Filter by player until the saved SQL returns embeddable "
+            "profile/feedback text for this ID."
+        )
     return out
 
 

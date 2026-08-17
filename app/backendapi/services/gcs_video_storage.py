@@ -66,6 +66,16 @@ def sanitize_filename(name: str | None) -> str:
     return (cleaned or "video.mp4")[:180]
 
 
+def sanitize_player_slug(name: str | None, player_key: str | None = None) -> str:
+    """GCS-safe player folder/file label, e.g. Danny_Papez-22292."""
+    raw_name = re.sub(r"\s+", " ", (name or "").strip())
+    name_part = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_name).strip("._")[:80]
+    key_part = re.sub(r"[^A-Za-z0-9._-]+", "_", (player_key or "").strip()).strip("._")[:40]
+    if name_part and key_part:
+        return f"{name_part}-{key_part}"
+    return name_part or key_part or "unknown-player"
+
+
 def video_extension(filename: str, content_type: str | None = None) -> str:
     ext = Path(sanitize_filename(filename)).suffix.lower()
     if ext in ALLOWED_VIDEO_EXTENSIONS:
@@ -89,12 +99,20 @@ def is_allowed_video(*, filename: str, content_type: str | None) -> bool:
     return ctype in ALLOWED_VIDEO_CONTENT_TYPES and ctype != "application/octet-stream"
 
 
-def build_object_name(filename: str, content_type: str | None = None) -> str:
+def build_object_name(
+    filename: str,
+    content_type: str | None = None,
+    *,
+    player_name: str | None = None,
+    player_key: str | None = None,
+) -> str:
     safe = sanitize_filename(filename)
     ext = video_extension(filename, content_type) or Path(safe).suffix.lower() or ".mp4"
     stem = Path(safe).stem or "video"
+    player_slug = sanitize_player_slug(player_name, player_key)
     now = datetime.now(UTC)
-    return f"{gcs_feedback_video_prefix()}/{now:%Y/%m}/{uuid.uuid4().hex}/{stem}{ext}"
+    unique = uuid.uuid4().hex[:8]
+    return f"{gcs_feedback_video_prefix()}/{now:%Y/%m}/{player_slug}/{player_slug}-{stem}-{unique}{ext}"
 
 
 def _prepare_adc() -> None:
@@ -163,6 +181,8 @@ def upload_feedback_video(
     filename: str,
     content_type: str | None,
     size_bytes: int | None = None,
+    player_name: str | None = None,
+    player_key: str | None = None,
 ) -> dict[str, Any]:
     bucket_name = gcs_feedback_video_bucket()
     if not bucket_name:
@@ -177,15 +197,28 @@ def upload_feedback_video(
     if size_bytes is not None and size_bytes > max_bytes:
         raise GcsVideoStorageError(f"Video exceeds max size of {max_bytes} bytes.")
 
-    object_name = build_object_name(filename, content_type)
+    object_name = build_object_name(
+        filename,
+        content_type,
+        player_name=player_name,
+        player_key=player_key,
+    )
     ctype = (content_type or "").split(";", 1)[0].strip() or "video/mp4"
     make_public = (os.getenv("GCS_FEEDBACK_VIDEO_PUBLIC") or "").strip().lower() in {"1", "true", "yes"}
+    player_slug = sanitize_player_slug(player_name, player_key)
 
     try:
         client = _storage_client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(object_name)
         blob.cache_control = "private, max-age=0"
+        meta = {
+            "player_name": (player_name or "").strip()[:180],
+            "player_key": (player_key or "").strip()[:80],
+            "player_slug": player_slug,
+            "original_filename": sanitize_filename(filename),
+        }
+        blob.metadata = {k: v for k, v in meta.items() if v}
         blob.upload_from_file(fileobj, content_type=ctype, rewind=True)
         if make_public:
             try:
@@ -207,6 +240,7 @@ def upload_feedback_video(
         object_name=object_name,
         size_bytes=size_bytes,
         public=make_public,
+        player_slug=player_slug,
     )
     return {
         "video_url": video_url,
@@ -214,6 +248,8 @@ def upload_feedback_video(
         "bucket": bucket_name,
         "object_name": object_name,
         "original_filename": sanitize_filename(filename),
+        "player_name": (player_name or "").strip(),
+        "player_key": (player_key or "").strip(),
         "content_type": ctype,
         "size_bytes": size_bytes,
     }

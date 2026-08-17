@@ -4,8 +4,10 @@ import pytest
 
 from backendapi.services.gcs_video_storage import (
     GcsVideoStorageError,
+    build_object_name,
     is_allowed_video,
     sanitize_filename,
+    sanitize_player_slug,
     upload_feedback_video,
     video_extension,
 )
@@ -14,6 +16,26 @@ from backendapi.services.gcs_video_storage import (
 def test_sanitize_filename_strips_paths_and_unsafe_chars():
     assert sanitize_filename("../../evil name.MP4") == "evil_name.MP4"
     assert sanitize_filename("") == "video.mp4"
+
+
+def test_sanitize_player_slug_includes_name_and_id():
+    assert sanitize_player_slug("Danny Papez", "22292") == "Danny_Papez-22292"
+    assert sanitize_player_slug("", "22292") == "22292"
+    assert sanitize_player_slug("  ", "") == "unknown-player"
+
+
+def test_build_object_name_includes_player(monkeypatch):
+    monkeypatch.setenv("GCS_FEEDBACK_VIDEO_PREFIX", "feedback-videos")
+    name = build_object_name(
+        "full_highlight_1_.mp4",
+        "video/mp4",
+        player_name="Danny Papez",
+        player_key="22292",
+    )
+    assert name.startswith("feedback-videos/")
+    assert "/Danny_Papez-22292/" in name
+    assert name.endswith(".mp4")
+    assert "Danny_Papez-22292-full_highlight_1_" in name
 
 
 def test_video_extension_from_name_and_content_type():

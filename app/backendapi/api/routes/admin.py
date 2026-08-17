@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -1156,6 +1156,11 @@ async def admin_run_player_sql_sync_inline(
                 "New syncs use smaller batches; set FIRESTORE_WRITE_BATCH_SIZE=10 if needed."
             ),
         ) from exc
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=str(result.get("detail") or result.get("reason") or "SQL sync failed"),
+        )
     return dict(result)
 
 
@@ -1867,6 +1872,8 @@ async def agents_lab_feedback_jobs(
 @router.post("/agents-lab/video-upload")
 async def agents_lab_video_upload(
     file: UploadFile = File(...),
+    player_key: str = Form(default=""),
+    player_name: str = Form(default=""),
     _admin: dict = Depends(get_admin_session_context),
 ) -> dict[str, Any]:
     """Store an uploaded match video in GCS and return an HTTPS URL for the feedback pipeline."""
@@ -1895,6 +1902,8 @@ async def agents_lab_video_upload(
         if not tmp_path:
             raise HTTPException(status_code=500, detail="Video upload temp file was not created.")
         upload_path = tmp_path
+        pk = player_key.strip()
+        pname = player_name.strip()
 
         def _upload() -> dict[str, Any]:
             with open(upload_path, "rb") as fh:
@@ -1903,6 +1912,8 @@ async def agents_lab_video_upload(
                     filename=filename,
                     content_type=content_type,
                     size_bytes=written,
+                    player_name=pname,
+                    player_key=pk,
                 )
 
         result = await asyncio.to_thread(_upload)
