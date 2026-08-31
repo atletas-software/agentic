@@ -106,13 +106,32 @@ def build_object_name(
     player_name: str | None = None,
     player_key: str | None = None,
 ) -> str:
+    """Player-first layout for easy GCS filtering: feedback-videos/{Player_Name-id}/YYYY/MM/..."""
     safe = sanitize_filename(filename)
     ext = video_extension(filename, content_type) or Path(safe).suffix.lower() or ".mp4"
     stem = Path(safe).stem or "video"
     player_slug = sanitize_player_slug(player_name, player_key)
     now = datetime.now(UTC)
     unique = uuid.uuid4().hex[:8]
-    return f"{gcs_feedback_video_prefix()}/{now:%Y/%m}/{player_slug}/{player_slug}-{stem}-{unique}{ext}"
+    return (
+        f"{gcs_feedback_video_prefix()}/{player_slug}/{now:%Y/%m}/"
+        f"{player_slug}-{stem}-{unique}{ext}"
+    )
+
+
+def is_managed_gcs_video_url(url: str) -> bool:
+    """True when URL already points at our feedback-videos bucket (public or signed)."""
+    bucket = gcs_feedback_video_bucket()
+    if not bucket or not (url or "").strip():
+        return False
+    u = url.strip().lower()
+    b = bucket.lower()
+    return (
+        f"storage.googleapis.com/{b}/" in u
+        or f"storage.cloud.google.com/{b}/" in u
+        or f"/{b}/o/" in u  # JSON API / signed forms
+        or u.startswith(f"gs://{b}/")
+    )
 
 
 def _prepare_adc() -> None:
@@ -253,3 +272,97 @@ def upload_feedback_video(
         "content_type": ctype,
         "size_bytes": size_bytes,
     }
+
+
+def ingest_remote_video_to_gcs(
+    remote_url: str,
+    *,
+    player_name: str | None = None,
+    player_key: str | None = None,
+    filename_hint: str | None = None,
+) -> dict[str, Any]:
+    """
+    Download a remote video URL and store it under the selected player's GCS folder.
+    Skips download when the URL already points at our feedback-videos bucket.
+    """
+    url = (remote_url or "").strip()
+    if not url:
+        raise GcsVideoStorageError("video_url is empty.")
+    if is_managed_gcs_video_url(url):
+        return {
+            "video_url": url,
+            "ingested": False,
+            "skipped_reason": "already_managed_gcs_url",
+            "player_name": (player_name or "").strip(),
+            "player_key": (player_key or "").strip(),
+        }
+
+    import tempfile
+    from urllib.parse import unquote, urlparse
+
+    import httpx
+
+    max_bytes = gcs_feedback_video_max_bytes()
+    parsed = urlparse(url)
+    path_name = Path(unquote(parsed.path or "")).name or "remote-video.mp4"
+    filename = sanitize_filename(filename_hint or path_name)
+    if not video_extension(filename, None):
+        filename = f"{Path(filename).stem or 'remote-video'}.mp4"
+
+    timeout = httpx.Timeout(30.0, read=600.0, write=60.0, connect=30.0)
+    tmp_path: str | None = None
+    written = 0
+    content_type = "video/mp4"
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=timeout) as resp:
+            if resp.status_code >= 400:
+                raise GcsVideoStorageError(
+                    f"Could not download video URL (HTTP {resp.status_code}). "
+                    "Signed/CDN links often expire or are IP-locked — upload the file instead."
+                )
+            ctype = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            if ctype.startswith("video/") or ctype == "application/octet-stream":
+                content_type = ctype or content_type
+            cl = resp.headers.get("content-length")
+            if cl and cl.isdigit() and int(cl) > max_bytes:
+                raise GcsVideoStorageError(f"Remote video exceeds max size of {max_bytes} bytes.")
+
+            suffix = video_extension(filename, content_type) or ".mp4"
+            with tempfile.NamedTemporaryFile(prefix="ingest-video-", suffix=suffix, delete=False) as tmp:
+                tmp_path = tmp.name
+                for chunk in resp.iter_bytes(1024 * 1024):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise GcsVideoStorageError(f"Remote video exceeds max size of {max_bytes} bytes.")
+                    tmp.write(chunk)
+        if written <= 0:
+            raise GcsVideoStorageError("Remote video URL returned an empty body.")
+        assert tmp_path is not None
+        with open(tmp_path, "rb") as fh:
+            result = upload_feedback_video(
+                fh,
+                filename=filename,
+                content_type=content_type,
+                size_bytes=written,
+                player_name=player_name,
+                player_key=player_key,
+            )
+        result["ingested"] = True
+        result["source_url"] = url[:500]
+        return result
+    except GcsVideoStorageError:
+        raise
+    except httpx.HTTPError as exc:
+        raise GcsVideoStorageError(
+            f"Failed to download video URL: {exc}. "
+            "If this is a CloudFront/signed link, upload the file in Agent Lab instead."
+        ) from exc
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+

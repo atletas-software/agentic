@@ -32,10 +32,20 @@ def test_build_object_name_includes_player(monkeypatch):
         player_name="Danny Papez",
         player_key="22292",
     )
-    assert name.startswith("feedback-videos/")
+    assert name.startswith("feedback-videos/Danny_Papez-22292/")
     assert "/Danny_Papez-22292/" in name
     assert name.endswith(".mp4")
     assert "Danny_Papez-22292-full_highlight_1_" in name
+
+
+def test_is_managed_gcs_video_url(monkeypatch):
+    from backendapi.services.gcs_video_storage import is_managed_gcs_video_url
+
+    monkeypatch.setenv("GCS_FEEDBACK_VIDEO_BUCKET", "athletefocus-feedback-videos")
+    assert is_managed_gcs_video_url(
+        "https://storage.googleapis.com/athletefocus-feedback-videos/feedback-videos/x/a.mp4"
+    )
+    assert not is_managed_gcs_video_url("https://d2eot0p3nxnc0t.cloudfront.net/foo.mp4")
 
 
 def test_video_extension_from_name_and_content_type():

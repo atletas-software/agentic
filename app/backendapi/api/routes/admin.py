@@ -65,6 +65,7 @@ from backendapi.workers.workspace_worker import feedback_agent_poll_progress_hin
 from backendapi.services.gcs_video_storage import (
     GcsVideoStorageError,
     gcs_feedback_video_max_bytes,
+    ingest_remote_video_to_gcs,
     upload_feedback_video,
 )
 
@@ -1702,6 +1703,45 @@ def _feedback_review_job_payload(body: AdminAgentsFeedbackReviewBody, *, db: Ses
     }
 
 
+def _ingest_agents_lab_video_url(
+    *,
+    video_url: str,
+    player_key: str,
+    player_name: str,
+    text_only: bool,
+) -> str:
+    """Copy paste-URL media into GCS under the player folder when needed."""
+    url = (video_url or "").strip()
+    if not url or text_only:
+        return url
+    ingested = ingest_remote_video_to_gcs(url, player_name=player_name, player_key=player_key)
+    return str(ingested.get("video_url") or url).strip() or url
+
+
+async def _resolve_agents_lab_video_url(
+    body: AdminAgentsFeedbackReviewBody,
+    *,
+    db: Session,
+    workspace_id: int,
+) -> AdminAgentsFeedbackReviewBody:
+    pk = body.player_key.strip()
+    focus = (body.player_focus or "").strip() or _player_display_name_for_key(db, workspace_id, pk)
+    try:
+        resolved = await asyncio.to_thread(
+            _ingest_agents_lab_video_url,
+            video_url=body.video_url.strip(),
+            player_key=pk,
+            player_name=focus,
+            text_only=bool(body.text_only),
+        )
+    except GcsVideoStorageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if resolved == body.video_url.strip():
+        return body
+    return body.model_copy(update={"video_url": resolved, "player_focus": focus})
+
+
+
 def _get_agents_lab_feedback_job(db: Session, job_id: int) -> AgentJob:
     ws = _agents_lab_admin_workspace(db)
     job = db.get(AgentJob, job_id)
@@ -2090,6 +2130,7 @@ async def agents_lab_create_feedback_review(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     ws = _agents_lab_admin_workspace(db)
+    body = await _resolve_agents_lab_video_url(body, db=db, workspace_id=ws.id)
     job = AgentJob(
         workspace_id=ws.id,
         agent_type="FEEDBACK_DELEGATE",
@@ -2123,6 +2164,7 @@ async def agents_lab_video_process(
 ) -> dict[str, Any]:
     """YOLO pose only, then chain FEEDBACK_DELEGATE."""
     ws = _agents_lab_admin_workspace(db)
+    body = await _resolve_agents_lab_video_url(body, db=db, workspace_id=ws.id)
     payload = _feedback_review_job_payload(body, db=db, workspace_id=ws.id)
     payload["chain_feedback"] = True
     job = AgentJob(
