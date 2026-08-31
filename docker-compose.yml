@@ -150,24 +150,11 @@ services:
     profiles: ["cloudsql"]
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.3
     container_name: athlete-agent-cloud-sql-proxy
-    environment:
-      CLOUD_SQL_CONNECTION_NAME: ${CLOUD_SQL_CONNECTION_NAME}
-      # Local Mac/Linux: 1 (use credentials.json). GCP VM with metadata ADC: 0.
-      CLOUDSQL_USE_CREDENTIALS_FILE: ${CLOUDSQL_USE_CREDENTIALS_FILE:-1}
-    volumes:
-      - ${CLOUDSQL_CREDENTIALS_FILE_HOST:-${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}}:/run/secrets/cloudsql-credentials.json:ro
+    # Image ENTRYPOINT is /cloud-sql-proxy — pass flags only (do not use sh -c here).
     command:
-      - sh
-      - -c
-      - |
-          set -e
-          if [ "$${CLOUDSQL_USE_CREDENTIALS_FILE}" = "1" ] && [ -f /run/secrets/cloudsql-credentials.json ]; then
-            exec /cloud-sql-proxy --address=0.0.0.0 --port=5432 \
-              --credentials-file=/run/secrets/cloudsql-credentials.json \
-              "$${CLOUD_SQL_CONNECTION_NAME}"
-          else
-            exec /cloud-sql-proxy --address=0.0.0.0 --port=5432 "$${CLOUD_SQL_CONNECTION_NAME}"
-          fi
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "${CLOUD_SQL_CONNECTION_NAME}"
     restart: unless-stopped
 
 volumes:

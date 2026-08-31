@@ -26,3 +26,13 @@ services:
         condition: service_started
     environment:
       DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
+
+  # Local Mac: gcloud ADC or credentials JSON (not VM metadata).
+  cloud-sql-proxy:
+    volumes:
+      - ${CLOUDSQL_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/cloudsql-credentials.json:ro
+    command:
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "--credentials-file=/run/secrets/cloudsql-credentials.json"
+      - "${CLOUD_SQL_CONNECTION_NAME}"

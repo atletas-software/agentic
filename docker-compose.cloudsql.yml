@@ -38,5 +38,5 @@ services:
 
   cloud-sql-proxy:
     <<: *gce-metadata
-    environment:
-      CLOUDSQL_USE_CREDENTIALS_FILE: ${CLOUDSQL_USE_CREDENTIALS_FILE:-0}
+    # GCP VM: uses attached service account via metadata (extra_hosts above).
+    # Local Mac dev: docker-compose.dev.cloudsql.yml adds --credentials-file.
