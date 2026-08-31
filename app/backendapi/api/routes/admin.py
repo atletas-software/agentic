@@ -1066,22 +1066,139 @@ def _lookup_sportal_profiles_by_query(db: Session, query: str, *, limit: int = 8
     return [_normalize_external_profile_row(row) for row in rows]
 
 
+def _lookup_sportal_profiles_by_filters(
+    db: Session,
+    *,
+    name: str = "",
+    email: str = "",
+    player_id: int | None = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Search Sportal profiles by optional name, email, and/or player ID (AND when multiple set)."""
+    name_q = (name or "").strip()
+    email_q = (email or "").strip()
+    if not name_q and not email_q and player_id is None:
+        return []
+
+    eng, raw_db_url = _sportal_sql_engine(db)
+    if not raw_db_url:
+        raise HTTPException(
+            status_code=400,
+            detail="MySQL URL is not configured. Set it in SQL & settings before syncing players.",
+        )
+    if eng is None:
+        raise HTTPException(status_code=400, detail="Invalid MySQL URL in player memory settings.")
+
+    clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 50))}
+
+    if player_id is not None and player_id > 0:
+        clauses.append("id = :pid")
+        params["pid"] = player_id
+
+    if email_q:
+        email_pat = f"%{email_q.lower()}%"
+        local_pat = f"%{email_q.split('@', 1)[0].lower()}%"
+        clauses.append(
+            "("
+            "LOWER(TRIM(COALESCE(email, ''))) LIKE :email_pat "
+            "OR LOWER(SUBSTRING_INDEX(COALESCE(email, ''), '@', 1)) LIKE :email_local_pat"
+            ")"
+        )
+        params["email_pat"] = email_pat
+        params["email_local_pat"] = local_pat
+
+    name_tokens = [t for t in name_q.lower().split() if t]
+    for idx, token in enumerate(name_tokens):
+        key = f"name_t{idx}"
+        pat = f"%{token}%"
+        clauses.append(
+            "("
+            f"LOWER(COALESCE(first_name, '')) LIKE :{key} "
+            f"OR LOWER(COALESCE(last_name, '')) LIKE :{key} "
+            f"OR LOWER(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')))) LIKE :{key}"
+            ")"
+        )
+        params[key] = pat
+
+    where_sql = " AND ".join(clauses) if clauses else "1=0"
+    order_bits = ["id DESC"]
+    if email_q:
+        order_bits.insert(0, "CASE WHEN LOWER(TRIM(COALESCE(email, ''))) = :email_exact THEN 0 ELSE 1 END")
+        params["email_exact"] = email_q.lower()
+    if name_tokens:
+        full_name = " ".join(name_tokens)
+        order_bits.insert(
+            0,
+            "CASE WHEN LOWER(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')))) = :full_name THEN 0 ELSE 1 END",
+        )
+        params["full_name"] = full_name
+
+    sql = f"""
+        SELECT id AS player_id, first_name, last_name, email
+        FROM sportal.profile
+        WHERE {where_sql}
+        ORDER BY {", ".join(order_bits)}
+        LIMIT :lim
+    """
+    try:
+        with eng.connect() as conn:
+            res = conn.execute(text(sql), params)
+            rows = [dict(row) for row in res.mappings()]
+    except OperationalError as exc:
+        _raise_sportal_db_http_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        _raise_sportal_db_http_error(exc)
+    return [_normalize_external_profile_row(row) for row in rows]
+
+
 @router.get("/player-memory/sportal-lookup")
 async def admin_lookup_sportal_player(
-    q: str = Query(..., min_length=1, max_length=200),
+    q: str = Query(default="", max_length=200),
+    name: str = Query(default="", max_length=120),
+    email: str = Query(default="", max_length=200),
+    player_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=25, ge=1, le=50),
     _admin: dict = Depends(get_admin_session_context),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Find Sportal players by ID, email, username, or name before SQL → vector sync."""
-    profiles = _lookup_sportal_profiles_by_query(db, q, limit=8)
+    """Find Sportal players by name, email, and/or ID before SQL → vector sync."""
+    if (name or "").strip() or (email or "").strip() or player_id is not None:
+        profiles = _lookup_sportal_profiles_by_filters(
+            db,
+            name=(name or "").strip(),
+            email=(email or "").strip(),
+            player_id=player_id,
+            limit=limit,
+        )
+        search_label = ", ".join(
+            p
+            for p in (
+                f"name={name.strip()}" if (name or "").strip() else "",
+                f"email={email.strip()}" if (email or "").strip() else "",
+                f"id={player_id}" if player_id is not None else "",
+            )
+            if p
+        )
+    else:
+        q_trim = (q or "").strip()
+        if not q_trim:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide at least one of: name, email, player_id, or q (legacy search).",
+            )
+        profiles = _lookup_sportal_profiles_by_query(db, q_trim, limit=limit)
+        search_label = q_trim
+
     if not profiles:
         return {
             "ok": False,
             "reason": "player_not_found",
-            "detail": f'No Sportal player matched "{q.strip()}". Try ID, email, username, or full name.',
+            "detail": f"No Sportal player matched ({search_label}). Try a different name, email, or ID.",
             "profiles": [],
+            "total": 0,
         }
-    return {"ok": True, "profiles": profiles, "unique": len(profiles) == 1}
+    return {"ok": True, "profiles": profiles, "total": len(profiles), "unique": len(profiles) == 1}
 
 
 @router.get("/player-memory/sportal-player/{player_id}")
@@ -1488,6 +1605,7 @@ class AdminAgentsFeedbackReviewBody(BaseModel):
     first_name: str = ""
     last_name: str = ""
     highlight_detector: str = Field(default="", max_length=32)
+    direct_openai_video: bool = Field(default=False)
 
 
 class AdminAgentsEmbedFeedbackBody(BaseModel):
@@ -1538,6 +1656,9 @@ def _feedback_review_job_payload(body: AdminAgentsFeedbackReviewBody, *, db: Ses
     pk = body.player_key.strip()
     coaching = (body.coaching_prompt or body.coaching_focus or "").strip()
     focus = (body.player_focus or "").strip() or _player_display_name_for_key(db, workspace_id, pk)
+    detector = (body.highlight_detector or "").strip().lower()
+    if body.direct_openai_video and not detector:
+        detector = "openai_video"
     return {
         "video_url": body.video_url.strip(),
         "text_only": bool(body.text_only),
@@ -1549,7 +1670,8 @@ def _feedback_review_job_payload(body: AdminAgentsFeedbackReviewBody, *, db: Ses
         "player_key": pk,
         "first_name": (body.first_name or "").strip(),
         "last_name": (body.last_name or "").strip(),
-        "highlight_detector": (body.highlight_detector or "").strip().lower(),
+        "highlight_detector": detector,
+        "direct_openai_video": bool(body.direct_openai_video),
     }
 
 
@@ -2073,6 +2195,11 @@ async def agents_lab_embed_feedback_to_memory(
             raise HTTPException(status_code=400, detail="Job must complete successfully before saving to memory.")
         if err == "no_player_key":
             raise HTTPException(status_code=400, detail="player_key is required.")
+        if err == "no_feedback_agent_or_local_review":
+            raise HTTPException(
+                status_code=503,
+                detail="Review JSON not found locally and FEEDBACK_AGENT_BASE_URL is not configured.",
+            )
         if err == "no_feedback_agent":
             raise HTTPException(status_code=503, detail="FEEDBACK_AGENT_BASE_URL is not configured.")
         raise HTTPException(status_code=400, detail=err)

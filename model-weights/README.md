@@ -1,53 +1,51 @@
-# YOLO model weights (production)
+# YOLO model weights (local Docker + production)
 
-The feedback-agent container needs a **highlight** weights file at:
+Api and worker containers read highlight weights from:
 
 ```text
-model-weights/highlight_yolo_v1.pt
+/app/app/agents/feedback/models/highlight_yolo_v1.pt
 ```
 
-This path is mounted read-only into the container as `/run/models/highlight_yolo_v1.pt`.
+(`docker-compose.yml` bind-mounts your checkout's `best.pt` to that path.)
 
-## Source weights in this repo (committed to git)
+## Setup before `docker compose up`
 
-Trained highlight weights are versioned at:
+Use **one** of these on the host:
+
+### Option A — weights in the repo (recommended after training)
 
 ```text
 app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
 ```
 
-After `git pull`, `docker-compose.yml` bind-mounts this file into the container (no rebuild
-required). Rebuild feedback-agent only when Python/torch dependencies change.
-
-## Setup on the VM (if not baked into the image)
-
-1. Copy `best.pt` from your laptop (repo path above) **or** promote to `model-weights/`:
+### Option B — copy to model-weights (if best.pt is not in git)
 
 ```bash
-cd /var/www/html/agentic
 mkdir -p model-weights
-# From your Mac (replace VM host):
-# scp app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt \
-#   root@YOUR_VM:/var/www/html/agentic/model-weights/highlight_yolo_v1.pt
+cp app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt \
+   model-weights/highlight_yolo_v1.pt
 ```
 
-2. Verify the file exists:
+Then add this bind mount to your compose override (or symlink best.pt into the artifacts path above).
+
+## Verify after start
 
 ```bash
-ls -la model-weights/highlight_yolo_v1.pt
+curl -s http://127.0.0.1:8000/feedback-agent/health | python3 -m json.tool
 ```
 
-3. Redeploy feedback-agent (see repo README or deploy steps from your team).
-
-4. Verify inside the container:
-
-```bash
-docker exec athlete-agent-feedback ls -la /run/models/
-curl -s http://127.0.0.1:5055/health | python3 -m json.tool
-```
-
-`pose_pipeline_ready` must be `true` before video feedback will work.
+Expect `"highlight_weights_ok": true` and `"ready_for_pose_pipeline": true`.
 
 ## Pose model
 
-`yolov8n-pose.pt` is downloaded automatically by Ultralytics on first run (needs outbound internet), unless you also place it in `model-weights/` and set `YOLO_POSE_WEIGHTS=/run/models/yolov8n-pose.pt`.
+`yolov8n-pose.pt` is downloaded automatically by Ultralytics on first run (needs outbound internet in the container).
+
+For GPU locally: set `YOLO_POSE_DEVICE=cuda` in repo-root `.env` (requires NVIDIA Container Toolkit).
+
+## Legacy standalone feedback-agent (:5055)
+
+Only needed if `FEEDBACK_DELEGATE_HTTP=true`. Otherwise YOLO runs in the **worker** container:
+
+```bash
+docker compose --profile feedback-agent up -d   # optional legacy service
+```

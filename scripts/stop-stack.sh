@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop API (:8000), feedback agent (:5055), and RQ worker for this repo.
+# Stop API (:8000) and RQ worker for this repo (optional legacy feedback agent :5055).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

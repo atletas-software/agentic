@@ -1,59 +1,70 @@
 # Local development overrides (hot reload, bind mounts, compose Postgres).
 name: athlete-agent
 # Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Prerequisites:
+#   1. cp app/backendapi/.env.example app/backendapi/.env  (set OPENAI_API_KEY)
+#   2. Highlight weights at ONE of:
+#        app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
+#        model-weights/highlight_yolo_v1.pt  (see model-weights/README.md)
+#   3. credentials.json for Google Sheets (optional for feedback-only testing)
+#
+# Verify YOLO after start:
+#   curl -s http://127.0.0.1:8000/feedback-agent/health | python3 -m json.tool
 
 services:
   api:
     env_file:
       - app/backendapi/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      YOLO_HIGHLIGHT_WEIGHTS: /app/app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
     volumes:
       - .:/app
+      - feedback_data:/app/data
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+      # When repo is bind-mounted, prefer weights inside the checkout (overrides production bind above).
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+        required: false
     command:
       - sh
       - -c
       - |
           set -e
           if [ "$${DEV_HOT_RELOAD:-1}" = "1" ]; then
-            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --reload
+            exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --reload --app-dir /app/app
           else
             exec uvicorn backendapi.main:app --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-2}
           fi
 
   worker:
+    env_file:
+      - app/backendapi/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-strongpassword}@postgres:5432/${POSTGRES_DB:-athlete}
+      YOLO_HIGHLIGHT_WEIGHTS: /app/app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
+      # Local in-container pose when pose-api profile is not used (still off by default via FEEDBACK_USE_POSE_PIPELINE).
+      POSE_PIPELINE_REMOTE_ONLY: ${POSE_PIPELINE_REMOTE_ONLY:-false}
     volumes:
       - .:/app
+      - feedback_data:/app/data
       - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-      feedback-agent:
-        condition: service_started
-
-  feedback-agent:
-    volumes:
-      - .:/app
-      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
-    command:
-      - sh
-      - -c
-      - |
-          set -e
-          if [ "$${DEV_HOT_RELOAD:-1}" = "1" ]; then
-            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055} --reload
-          else
-            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055}
-          fi
+      postgres:
+        condition: service_healthy
+        required: false
 
   postgres:
+    profiles: ["local-postgres"]
     image: pgvector/pgvector:pg16
     container_name: athlete-agent-postgres
     restart: unless-stopped
@@ -70,6 +81,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Optional legacy standalone agent — review UI is served from api :8000 by default.
+  feedback-agent:
+    profiles: ["feedback-agent"]
+    volumes:
+      - .:/app
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
+    command:
+      - sh
+      - -c
+      - |
+          set -e
+          if [ "$${DEV_HOT_RELOAD:-1}" = "1" ]; then
+            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055} --reload
+          else
+            exec uvicorn agents.feedback.main:app --host 0.0.0.0 --port $${PORT:-5055}
+          fi
 
 volumes:
   postgres_data:

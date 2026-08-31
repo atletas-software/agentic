@@ -84,7 +84,7 @@ activate_python() {
 }
 
 load_env() {
-  for f in app/pose_api/.env app/agents/.env app/backendapi/.env .env; do
+  for f in app/pose_api/.env app/backendapi/.env .env; do
     if [[ -f "$f" ]]; then
       set -a
       # shellcheck disable=SC1091

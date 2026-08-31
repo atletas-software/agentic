@@ -10,14 +10,54 @@ from sqlalchemy.orm import Session
 from backendapi.services.player_memory_service import insert_chunks
 
 
-def feedback_review_document_chunks(review: dict[str, Any], review_id: str) -> list[tuple[str, str, dict[str, Any]]]:
-    """Turn stored review JSON into embeddable parts."""
+def _base_chunk_metadata(
+    *,
+    review_id: str,
+    video_url: str | None = None,
+    agent_job_id: int | None = None,
+    player_key: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "review_id": review_id,
+        "source_kind": "feedback_review",
+    }
+    if video_url:
+        meta["video_url"] = video_url
+    if agent_job_id is not None:
+        meta["agent_job_id"] = agent_job_id
+    if player_key:
+        meta["player_key"] = player_key
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+def feedback_review_document_chunks(
+    review: dict[str, Any],
+    review_id: str,
+    *,
+    video_url: str | None = None,
+    agent_job_id: int | None = None,
+    player_key: str | None = None,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Turn stored review JSON into embeddable parts linked to the source video."""
+    resolved_video = (video_url or str(review.get("video_url") or "")).strip() or None
+    base_meta = _base_chunk_metadata(
+        review_id=review_id,
+        video_url=resolved_video,
+        agent_job_id=agent_job_id,
+        player_key=player_key,
+    )
+
     out: list[tuple[str, str, dict[str, Any]]] = []
     oa = review.get("overall_assessment") or {}
     strengths = oa.get("strengths") or []
     improvements = oa.get("improvements") or []
     next_focus = oa.get("next_focus") or []
     lines = ["Overall assessment:"]
+    if resolved_video:
+        lines.append(f"Source video: {resolved_video}")
     if strengths:
         lines.append("Strengths: " + "; ".join(str(s) for s in strengths))
     if improvements:
@@ -26,11 +66,26 @@ def feedback_review_document_chunks(review: dict[str, Any], review_id: str) -> l
         lines.append("Next focus: " + "; ".join(str(s) for s in next_focus))
     overall_text = "\n".join(lines)
     if overall_text.strip() != "Overall assessment:":
-        out.append((overall_text, f"feedback:{review_id}:overall", {"review_id": review_id}))
+        out.append(
+            (
+                overall_text,
+                f"feedback:{review_id}:overall",
+                {**base_meta, "chunk_kind": "overall"},
+            )
+        )
 
     letter = str(review.get("coach_narrative") or "").strip()
     if letter:
-        out.append((letter, f"feedback:{review_id}:letter", {"review_id": review_id, "kind": "coach_narrative"}))
+        letter_text = letter
+        if resolved_video:
+            letter_text = f"Source video: {resolved_video}\n\n{letter}"
+        out.append(
+            (
+                letter_text,
+                f"feedback:{review_id}:letter",
+                {**base_meta, "chunk_kind": "coach_narrative"},
+            )
+        )
 
     for idx, marker in enumerate(review.get("markers") or []):
         note = str(marker.get("coaching_note") or "").strip()
@@ -38,8 +93,24 @@ def feedback_review_document_chunks(review: dict[str, Any], review_id: str) -> l
             continue
         ts = marker.get("timestamp_sec")
         cat = marker.get("category") or ""
-        block = f"Moment @ {ts}s ({cat}): {note}"
-        out.append((block, f"feedback:{review_id}:m:{idx}", {"review_id": review_id, "marker_index": idx}))
+        block_lines = []
+        if resolved_video:
+            block_lines.append(f"Source video: {resolved_video}")
+        block_lines.append(f"Moment @ {ts}s ({cat}): {note}")
+        block = "\n".join(block_lines)
+        out.append(
+            (
+                block,
+                f"feedback:{review_id}:m:{idx}",
+                {
+                    **base_meta,
+                    "chunk_kind": "marker",
+                    "marker_index": idx,
+                    "timestamp_sec": ts,
+                    "category": cat,
+                },
+            )
+        )
     return out
 
 
@@ -50,8 +121,16 @@ def embed_completed_feedback_review(
     player_key: str,
     review: dict[str, Any],
     review_id: str,
+    video_url: str | None = None,
+    agent_job_id: int | None = None,
 ) -> int:
-    parts = feedback_review_document_chunks(review, review_id)
+    parts = feedback_review_document_chunks(
+        review,
+        review_id,
+        video_url=video_url,
+        agent_job_id=agent_job_id,
+        player_key=player_key,
+    )
     if not parts:
         return 0
     return insert_chunks(
@@ -88,19 +167,24 @@ def embed_feedback_review_for_agent_job(
     if not review_id:
         return {"ok": False, "error": "no_review_id"}
 
-    base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").rstrip("/")
-    if not base:
-        return {"ok": False, "error": "no_feedback_agent"}
+    from backendapi.services.feedback_runner import load_review_json
 
-    timeout = float(os.getenv("FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS", "30"))
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.get(f"{base}/api/reviews/{review_id}")
-    if resp.status_code >= 400:
-        return {"ok": False, "error": f"fetch_review_http_{resp.status_code}"}
+    review = load_review_json(review_id)
+    if review is None:
+        base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").rstrip("/")
+        if not base:
+            return {"ok": False, "error": "no_feedback_agent_or_local_review"}
 
-    review = resp.json()
+        timeout = float(os.getenv("FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS", "30"))
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(f"{base}/api/reviews/{review_id}")
+        if resp.status_code >= 400:
+            return {"ok": False, "error": f"fetch_review_http_{resp.status_code}"}
+        review = resp.json()
     if review.get("error"):
         return {"ok": False, "error": "review_response_error"}
+
+    video_url = (payload.get("video_url") or review.get("video_url") or "").strip() or None
 
     ws = ensure_workspace(user_id="0", db=db)
     n = embed_completed_feedback_review(
@@ -109,5 +193,13 @@ def embed_feedback_review_for_agent_job(
         player_key=pk,
         review=review,
         review_id=review_id,
+        video_url=video_url,
+        agent_job_id=int(job.id),
     )
-    return {"ok": True, "chunks_written": n, "player_key": pk, "review_id": review_id}
+    return {
+        "ok": True,
+        "chunks_written": n,
+        "player_key": pk,
+        "review_id": review_id,
+        "video_url": video_url,
+    }

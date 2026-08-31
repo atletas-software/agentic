@@ -8,6 +8,8 @@ from typing import Any, Optional
 from agents.feedback.models import ReviewMoment, VideoFeedbackReview, VideoSummary
 from agents.feedback.openai_service import (
     analyze_storyboards,
+    analyze_video_direct_openai,
+    coaching_wants_per_circle_feedback,
     select_coaching_moments_from_frames,
     summarize_highlight_windows_for_feedback,
     synthesize_overall_from_circle_segments,
@@ -86,6 +88,8 @@ def _subsample_frame_assets(assets: list[FrameAsset], max_n: int) -> list[FrameA
 
 def _selected_detector(override: str | None = None) -> str:
     raw = (override or os.getenv("VIDEO_HIGHLIGHT_DETECTOR") or "yolo").strip().lower()
+    if raw in {"openai_video", "video", "direct_video"}:
+        return "openai_video"
     if raw in {"openai", "gpt", "vision"}:
         return "openai"
     if raw in {"yolo", "yolov8"}:
@@ -173,6 +177,7 @@ def _try_openai_segment_review(
         duration_sec=duration_sec,
         coaching_focus=coaching_focus,
         player_memory_context=player_memory_context,
+        shared_context=shared_context,
         batch_size=batch_size,
         min_gap_sec=min_gap,
         max_moments=max_moments,
@@ -397,12 +402,17 @@ def _try_yolo_segment_review(
     """
     if run_yolo_pipeline is None:
         return None
+    circle_mode = coaching_wants_per_circle_feedback(coaching_focus)
+    merge_gap = 0.5 if circle_mode else None
+    max_events = 40 if circle_mode else None
     try:
         pipeline = run_yolo_pipeline(
             video_url=video_url,
             base_dir=base_dir,
             on_progress=on_progress,
             cancel_check=cancel_check,
+            merge_gap_sec=merge_gap,
+            max_events=max_events,
         )
     except HighlightDetectorUnavailable as exc:
         if on_progress:
@@ -669,6 +679,75 @@ def _try_yolo_segment_review(
     return review
 
 
+def _try_direct_openai_video_review(
+    *,
+    review_id: str,
+    video_url: str,
+    base_dir: Path,
+    sport: str,
+    player_focus: str,
+    analysis_scope: str,
+    coaching_focus: str,
+    player_memory_context: str | None,
+    shared_context: str | None,
+    player_memory_retrieval_debug: dict[str, Any] | None,
+    shared_context_sheet_debug: dict[str, Any] | None,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> dict | None:
+    """Single-pass OpenAI vision on the full video (no YOLO circle detection)."""
+    _raise_if_cancelled(cancel_check)
+    if on_progress:
+        on_progress(
+            {
+                "phase": "openai_direct_video",
+                "progress_detail": "Sending video to OpenAI vision (no YOLO)…",
+            }
+        )
+    duration_sec = probe_duration(video_url)
+    _raise_if_cancelled(cancel_check)
+    review_payload, llm_debug = analyze_video_direct_openai(
+        video_url=video_url,
+        sport=sport,
+        player_focus=player_focus,
+        duration_sec=duration_sec,
+        analysis_scope=analysis_scope,
+        coaching_focus=coaching_focus,
+        player_memory_context=player_memory_context,
+        shared_context=shared_context,
+        base_dir=base_dir,
+    )
+    moments = list(review_payload.moments or [])
+    allowed_timestamps = [round(float(m.timestamp_sec), 2) for m in moments]
+    review = _to_review_document(
+        review_id=review_id,
+        video_url=video_url,
+        duration_sec=duration_sec,
+        review_payload=review_payload,
+        analysis_mode="openai-direct-video",
+        allowed_timestamps=allowed_timestamps,
+    )
+    review["generation_debug"] = {
+        "analysis_kind": "openai-direct-video",
+        "openai": llm_debug,
+        "shared_context_sheet": shared_context_sheet_debug,
+        "player_memory_vector_retrieval": player_memory_retrieval_debug,
+        "video_preprocess": {
+            "detector": "none",
+            "pipeline": "direct_openai_video",
+            "moment_count": len(moments),
+        },
+    }
+    review["video_context"] = {
+        "description": (
+            "Full video sent to OpenAI vision without YOLO circle detection. "
+            "Personal + shared context and coaching prompt are included in the same call."
+        ),
+    }
+    save_json(base_dir / "review.json", review)
+    return review
+
+
 def _try_circle_segment_episode_review(
     *,
     review_id: str,
@@ -694,6 +773,22 @@ def _try_circle_segment_episode_review(
     → vision → one marker per episode + overall synthesis. Returns None to use legacy path.
     """
     detector = _selected_detector(highlight_detector)
+    if detector == "openai_video":
+        return _try_direct_openai_video_review(
+            review_id=review_id,
+            video_url=video_url,
+            base_dir=base_dir,
+            sport=sport,
+            player_focus=player_focus,
+            analysis_scope=analysis_scope,
+            coaching_focus=coaching_focus,
+            player_memory_context=player_memory_context,
+            shared_context=shared_context,
+            player_memory_retrieval_debug=player_memory_retrieval_debug,
+            shared_context_sheet_debug=shared_context_sheet_debug,
+            on_progress=on_progress,
+            cancel_check=cancel_check,
+        )
     if detector == "openai":
         return _try_openai_segment_review(
             review_id=review_id,
@@ -764,6 +859,8 @@ def _try_circle_segment_episode_review(
     min_probes = int((os.getenv("VIDEO_CIRCLE_MIN_SEGMENT_PROBES") or "1").strip() or "1")
     segments = [s for s in raw_segments if s[3] >= min_probes]
     min_gap = float((os.getenv("VIDEO_CIRCLE_MIN_GAP_SEC") or "3").strip() or "3")
+    if coaching_wants_per_circle_feedback(coaching_focus):
+        min_gap = float((os.getenv("VIDEO_CIRCLE_PER_CIRCLE_MIN_GAP_SEC") or "0.5").strip() or "0.5")
     if min_gap > 0 and len(segments) > 1:
         merged: list[tuple[float, float, float, int]] = [segments[0]]
         for cur in segments[1:]:

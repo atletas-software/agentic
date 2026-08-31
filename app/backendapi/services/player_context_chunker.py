@@ -33,7 +33,7 @@ def _parse_json_field(raw: str) -> Any:
 
 
 def _player_header(row: dict[str, str]) -> str:
-    player_id = _scalar(row, "player_user_id", "reviewee_id", "player_id")
+    player_id = _scalar(row, "reviewee_id", "player_user_id", "player_id")
     player_name = clean_embedding_text(_scalar(row, "player_name", "reviewee_name"), min_length=1)
     club = clean_embedding_text(_scalar(row, "club_name"), min_length=1)
     header = f"Player: {player_name or player_id}"
@@ -52,7 +52,7 @@ def structured_chunks_from_player_row(row: dict[str, str]) -> list[tuple[str, st
     Only these fields are embedded — no other SQL columns are stored in the vector DB.
     """
     out: list[tuple[str, str, dict[str, Any]]] = []
-    player_id = _scalar(row, "player_user_id", "reviewee_id", "player_id")
+    player_id = _scalar(row, "reviewee_id", "player_user_id", "player_id")
     player_name = clean_embedding_text(_scalar(row, "player_name", "reviewee_name"), min_length=1)
     club_name = clean_embedding_text(_scalar(row, "club_name"), min_length=1)
     header = _player_header(row)

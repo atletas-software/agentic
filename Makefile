@@ -5,21 +5,24 @@ AGENTS_VENV := .venv-agents
 
 COMPOSE := docker compose
 COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
+COMPOSE_DEV_LOCAL := $(COMPOSE_DEV) --profile local-postgres
+COMPOSE_DEV_CLOUDSQL := $(COMPOSE_DEV) -f docker-compose.dev.cloudsql.yml --profile cloudsql
 COMPOSE_CLOUDSQL := $(COMPOSE) -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql
 
-.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-prod run-prod-cloudsql clean-legacy stop-all logs-all ps restart-all prune-docker
+.PHONY: help setup-env setup-app setup-agents run-api run-worker run-feedback run-all run-dev-cloudsql run-prod run-prod-cloudsql clean-legacy stop-all logs-all ps restart-all prune-docker
 
 help:
 	@echo "Available targets:"
-	@echo "  make setup-env      # create app/backendapi/.env, app/agents/.env, .env from *.example if missing"
+	@echo "  make setup-env      # create app/backendapi/.env and .env from *.example if missing"
 	@echo "  make setup-app      # create .venv-app and install app deps"
 	@echo "  make setup-agents   # create .venv-agents and install agent deps"
 	@echo "  make run-api        # run platform API on :8000"
 	@echo "  make run-worker     # run RQ worker"
 	@echo "  make run-feedback   # run feedback agent on :5055"
-	@echo "  make run-all        # local dev: compose + postgres + hot reload"
-	@echo "  make run-prod       # GCP VM: api/worker/feedback-agent/redis"
-	@echo "  make run-prod-cloudsql  # GCP VM + Cloud SQL proxy (stops legacy sheet-mcp-* first)"
+	@echo "  make run-all           # local Docker: postgres + redis + YOLO (hot reload)"
+	@echo "  make run-dev-cloudsql  # local Docker: Cloud SQL proxy + redis + YOLO (hot reload)"
+	@echo "  make run-prod          # GCP VM: api/worker/redis (YOLO in worker)"
+	@echo "  make run-prod-cloudsql # GCP VM + Cloud SQL proxy"
 	@echo "  make clean-legacy   # remove old sheet-mcp-* containers (frees :8000 / :5055)"
 	@echo "  make stop-all       # stop all docker services"
 	@echo "  make logs-all       # tail docker compose logs"
@@ -29,9 +32,8 @@ help:
 
 setup-env:
 	@test -f app/backendapi/.env || (cp app/backendapi/.env.example app/backendapi/.env && echo "Created app/backendapi/.env")
-	@test -f app/agents/.env || (cp app/agents/.env.example app/agents/.env && echo "Created app/agents/.env")
 	@test -f .env || (cp .env.example .env && echo "Created .env")
-	@echo "Env files OK. Edit app/backendapi/.env and app/agents/.env (set OPENAI_API_KEY, OAuth, etc.)."
+	@echo "Env files OK. Edit app/backendapi/.env (OPENAI_API_KEY, OAuth, etc.)."
 
 setup-app:
 	python3 -m venv "$(APP_VENV)"
@@ -51,7 +53,10 @@ run-feedback:
 	PYTHONPATH=app "$(AGENTS_VENV)/bin/uvicorn" agents.feedback.main:app --host 0.0.0.0 --port 5055
 
 run-all: setup-env
-	$(COMPOSE_DEV) up -d --build
+	$(COMPOSE_DEV_LOCAL) up -d --build
+
+run-dev-cloudsql: setup-env
+	$(COMPOSE_DEV_CLOUDSQL) up -d --build
 
 run-prod: setup-env
 	$(COMPOSE) up -d --build
@@ -65,7 +70,9 @@ run-prod-cloudsql: setup-env clean-legacy
 	$(COMPOSE_CLOUDSQL) up -d --build
 
 stop-all:
-	$(COMPOSE_DEV) down --remove-orphans 2>/dev/null || $(COMPOSE) down --remove-orphans
+	$(COMPOSE_DEV_CLOUDSQL) down --remove-orphans 2>/dev/null || \
+	$(COMPOSE_DEV_LOCAL) down --remove-orphans 2>/dev/null || \
+	$(COMPOSE) down --remove-orphans
 
 logs-all:
 	$(COMPOSE) logs -f

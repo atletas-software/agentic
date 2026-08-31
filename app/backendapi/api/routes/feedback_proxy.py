@@ -1,94 +1,10 @@
-"""Proxy user-facing feedback-agent routes through the platform API (port 8000).
+"""Feedback review UI + JSON API on the platform API (no separate :5055 proxy).
 
-The Next.js frontend (:3000) rewrites /review, /jobs, /share, /api/reviews here.
-Server-to-server calls still use FEEDBACK_AGENT_BASE_URL (:5055).
-Share/review links should use FRONTEND_BASE_URL, not this API origin.
+The Next.js frontend rewrites /review, /jobs, /share, and /api/reviews to these routes.
 """
 
 from __future__ import annotations
 
-import os
+from agents.feedback.routes import router
 
-import httpx
-from fastapi import APIRouter, Request, Response
-
-router = APIRouter(include_in_schema=False)
-
-
-def _feedback_upstream() -> str:
-    return (os.getenv("FEEDBACK_AGENT_BASE_URL") or "http://127.0.0.1:5055").rstrip("/")
-
-
-def _forward_headers(request: Request) -> dict[str, str]:
-    skip = {"host", "content-length", "connection", "transfer-encoding"}
-    return {k: v for k, v in request.headers.items() if k.lower() not in skip}
-
-
-async def _proxy(request: Request, upstream_path: str) -> Response:
-    base = _feedback_upstream()
-    path = upstream_path.lstrip("/")
-    url = f"{base}/{path}" if path else base
-    if request.url.query:
-        url = f"{url}?{request.url.query}"
-
-    body = await request.body()
-    timeout = float(os.getenv("FEEDBACK_PROXY_TIMEOUT_SECONDS", "120"))
-
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        upstream = await client.request(
-            request.method,
-            url,
-            headers=_forward_headers(request),
-            content=body if body else None,
-        )
-
-    skip_resp = {"content-encoding", "content-length", "transfer-encoding", "connection"}
-    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in skip_resp}
-    return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
-
-
-@router.api_route("/api/reviews", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def proxy_api_reviews_root(request: Request) -> Response:
-    return await _proxy(request, "api/reviews")
-
-
-@router.api_route("/api/reviews/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def proxy_api_reviews(request: Request, path: str) -> Response:
-    return await _proxy(request, f"api/reviews/{path}")
-
-
-@router.api_route("/reviews", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def proxy_reviews_root_stripped(request: Request) -> Response:
-    """Same as /api/reviews when a reverse proxy strips the /api prefix."""
-    return await _proxy(request, "api/reviews")
-
-
-@router.api_route("/reviews/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def proxy_reviews_stripped(request: Request, path: str) -> Response:
-    """Same as /api/reviews/... when a reverse proxy strips the /api prefix."""
-    return await _proxy(request, f"api/reviews/{path}")
-
-
-@router.api_route("/api/pose-markers", methods=["POST", "OPTIONS"])
-async def proxy_pose_markers(request: Request) -> Response:
-    return await _proxy(request, "api/pose-markers")
-
-
-@router.api_route("/pose-markers", methods=["POST", "OPTIONS"])
-async def proxy_pose_markers_stripped(request: Request) -> Response:
-    return await _proxy(request, "api/pose-markers")
-
-
-@router.get("/review/{path:path}")
-async def proxy_review_pages(request: Request, path: str) -> Response:
-    return await _proxy(request, f"review/{path}")
-
-
-@router.get("/jobs/{review_id}")
-async def proxy_feedback_job_page(request: Request, review_id: str) -> Response:
-    return await _proxy(request, f"jobs/{review_id}")
-
-
-@router.get("/share/{path:path}")
-async def proxy_share_pages(request: Request, path: str) -> Response:
-    return await _proxy(request, f"share/{path}")
+__all__ = ["router"]

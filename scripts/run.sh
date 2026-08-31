@@ -5,16 +5,14 @@
 #   bash scripts/run.sh                 # setup (if needed) + stop old processes + start stack
 #   bash scripts/run.sh --start-only    # start only (skip pip/torch setup)
 #   bash scripts/run.sh --setup-only    # venv, deps, env files — do not start services
-#   bash scripts/run.sh --stop          # stop API :8000, feedback :5055, worker
+#   bash scripts/run.sh --stop          # stop API :8000 and worker
 #   bash scripts/run.sh --status        # health + log paths
 #
-# Configure once in app/backendapi/.env (and app/agents/.env for OPENAI_API_KEY):
-#   FEEDBACK_AGENT_BASE_URL=http://127.0.0.1:5055
-#   FEEDBACK_PUBLIC_BASE_URL=https://YOUR-HOST-8000.proxy.runpod.net   # browser review links
+# Configure once in app/backendapi/.env:
+#   OPENAI_API_KEY=sk-...
+#   FEEDBACK_PUBLIC_BASE_URL=https://YOUR-HOST-8000.proxy.runpod.net
 #   YOLO_POSE_DEVICE=cuda
 #   YOLO_HIGHLIGHT_WEIGHTS=app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt
-#   FEEDBACK_USE_POSE_PIPELINE=false   # default: YOLO highlight + tactical vision (no pose)
-#   OPENAI_API_KEY=sk-...
 #
 set -euo pipefail
 
@@ -68,12 +66,6 @@ load_env() {
     source app/backendapi/.env
     set +a
   fi
-  if [[ -f app/agents/.env ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source app/agents/.env
-    set +a
-  fi
   if [[ -f .env ]]; then
     set -a
     # shellcheck disable=SC1091
@@ -84,7 +76,6 @@ load_env() {
 }
 
 apply_defaults() {
-  export FEEDBACK_AGENT_BASE_URL="${FEEDBACK_AGENT_BASE_URL:-http://127.0.0.1:5055}"
   export FEEDBACK_USE_POSE_PIPELINE="${FEEDBACK_USE_POSE_PIPELINE:-false}"
   export POSE_PIPELINE_OUTPUT_DIR="${POSE_PIPELINE_OUTPUT_DIR:-app/yolo_model/artifacts/pose}"
 
@@ -111,11 +102,7 @@ apply_defaults() {
 ensure_env_files() {
   if [[ ! -f app/backendapi/.env ]]; then
     cp app/backendapi/.env.example app/backendapi/.env
-    log "Created app/backendapi/.env from example — edit FEEDBACK_PUBLIC_BASE_URL, OPENAI_API_KEY, etc."
-  fi
-  if [[ ! -f app/agents/.env ]]; then
-    cp app/agents/.env.example app/agents/.env
-    log "Created app/agents/.env from example — set OPENAI_API_KEY if not in app/backendapi/.env"
+    log "Created app/backendapi/.env from example — edit OPENAI_API_KEY, etc."
   fi
 }
 
@@ -203,12 +190,10 @@ print_status() {
   echo "Repo:     ${ROOT}"
   echo "Python:   $(python -V 2>&1)"
   curl -sf http://127.0.0.1:8000/health >/dev/null && echo "API :8000       OK" || echo "API :8000       not running"
-  curl -sf -o /dev/null http://127.0.0.1:5055/health 2>/dev/null && echo "Feedback :5055  OK" || \
-    curl -sf -o /dev/null http://127.0.0.1:5055/ 2>/dev/null && echo "Feedback :5055  OK" || echo "Feedback :5055  not running"
+  curl -sf -o /dev/null http://127.0.0.1:8000/feedback-agent/health 2>/dev/null && echo "YOLO routes     OK" || echo "YOLO routes     not ready (check weights + torch)"
   command -v redis-cli >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1 && echo "Redis           OK" || echo "Redis           not running"
   echo ""
   echo "Config:"
-  echo "  FEEDBACK_AGENT_BASE_URL=${FEEDBACK_AGENT_BASE_URL:-not set}"
   echo "  FEEDBACK_PUBLIC_BASE_URL=${FEEDBACK_PUBLIC_BASE_URL:-not set}"
   echo "  YOLO_POSE_DEVICE=${YOLO_POSE_DEVICE:-not set}"
   echo "  YOLO_HIGHLIGHT_WEIGHTS=${YOLO_HIGHLIGHT_WEIGHTS:-not set}"
@@ -221,7 +206,7 @@ print_status() {
   echo "  Review example:    ${pub}/review/{review_id}"
   echo ""
   echo "Logs:"
-  echo "  tail -f /tmp/agentic-api.log /tmp/agentic-worker.log /tmp/agentic-feedback.log"
+  echo "  tail -f /tmp/agentic-api.log /tmp/agentic-worker.log"
   echo ""
   echo "Pose JSON output:  ${POSE_PIPELINE_OUTPUT_DIR:-app/yolo_model/artifacts/pose}/job_<agent_job_id>/pose_results.json"
 }

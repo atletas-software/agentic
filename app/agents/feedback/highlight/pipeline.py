@@ -90,6 +90,8 @@ def run_yolo_pipeline(
     detector: Optional[HighlightDetector] = None,
     on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    merge_gap_sec: float | None = None,
+    max_events: int | None = None,
 ) -> PipelineResult:
     """Run cache → probe → events → assets end-to-end.
 
@@ -155,6 +157,8 @@ def run_yolo_pipeline(
     raw_events: list[HighlightEvent] = build_events(
         probes.merged_sorted(),
         duration_sec=duration_sec,
+        merge_gap_sec=merge_gap_sec,
+        max_events=max_events,
     )
     events_build_sec = round(time.time() - t0, 2)
 

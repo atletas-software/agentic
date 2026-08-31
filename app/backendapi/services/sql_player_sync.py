@@ -32,9 +32,10 @@ from backendapi.services.text_chunking import chunk_text_by_tokens
 
 
 def _player_id_from_row_dict(rd: dict[str, str]) -> int:
+    """Canonical athlete key: reviewee_id (Sportal athlete) before player_user_id (profile/join alias)."""
     return (
-        _safe_int(rd.get("player_user_id"))
-        or _safe_int(rd.get("reviewee_id"))
+        _safe_int(rd.get("reviewee_id"))
+        or _safe_int(rd.get("player_user_id"))
         or _safe_int(rd.get("player_id"))
     )
 

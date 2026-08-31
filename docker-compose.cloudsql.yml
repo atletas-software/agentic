@@ -1,9 +1,11 @@
-# Merge with docker-compose.yml on a GCE VM that has a service account attached
-# (e.g. athlete-agent-vm@athletefocus-agents.iam.gserviceaccount.com with roles/cloudsql.client).
+# Cloud SQL for production (GCP VM) or merged with docker-compose.dev.cloudsql.yml for local dev.
 #
-# The Cloud SQL proxy uses the VM metadata server (ADC) — do NOT mount credentials.json here.
+# GCP VM (attached service account — no JSON key for proxy or Firestore):
+#   CLOUDSQL_USE_CREDENTIALS_FILE=0 in repo-root .env
+#   make run-prod-cloudsql
 #
-#   docker compose -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql up -d --build
+# Local Mac: CLOUDSQL_USE_CREDENTIALS_FILE=1 + ADC or credentials.json
+#   make run-dev-cloudsql
 #
 # Repo-root .env (URL-encode special characters in CLOUDSQL_PASSWORD):
 #   CLOUD_SQL_CONNECTION_NAME=athletefocus-agents:region:instance
@@ -11,8 +13,13 @@
 #   CLOUDSQL_PASSWORD=your-url-encoded-password
 #   CLOUDSQL_DATABASE=postgres
 
+x-gce-metadata: &gce-metadata
+  extra_hosts:
+    - "metadata.google.internal:169.254.169.254"
+
 services:
   api:
+    <<: *gce-metadata
     environment:
       DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
     depends_on:
@@ -21,6 +28,7 @@ services:
         required: true
 
   worker:
+    <<: *gce-metadata
     environment:
       DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
     depends_on:
@@ -29,4 +37,6 @@ services:
         required: true
 
   cloud-sql-proxy:
-    # Uses the GCE VM attached service account (metadata). Requires roles/cloudsql.client on that SA.
+    <<: *gce-metadata
+    environment:
+      CLOUDSQL_USE_CREDENTIALS_FILE: ${CLOUDSQL_USE_CREDENTIALS_FILE:-0}

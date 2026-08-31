@@ -18,6 +18,27 @@ from agents.feedback.models import (
 from agents.feedback.video_utils import FrameAsset
 
 
+def coaching_wants_per_circle_feedback(coaching_focus: str | None) -> bool:
+    """True when the admin prompt asks for feedback at each red-circle highlight."""
+    cf = (coaching_focus or "").strip().lower()
+    if not cf:
+        return False
+    patterns = (
+        "every time",
+        "each time",
+        "whenever",
+        "each circle",
+        "every circle",
+        "circled",
+        "red circle",
+        "highlight",
+        "per circle",
+        "when player is circled",
+        "when the player is circled",
+    )
+    return any(p in cf for p in patterns)
+
+
 class PlayerLocalization(BaseModel):
     found: bool
     confidence: Literal["low", "medium", "high"]
@@ -106,16 +127,23 @@ def select_coaching_moments_from_frames(
     duration_sec: float,
     coaching_focus: str | None = None,
     player_memory_context: str | None = None,
+    shared_context: str | None = None,
     batch_size: int = 16,
     min_gap_sec: float = 3.0,
     max_moments: int = 10,
 ) -> tuple[list[OpenAIPickedMoment], dict[str, Any]]:
     """Pass 1: OpenAI vision picks coaching-worthy timestamps from sampled stills."""
+    circle_mode = coaching_wants_per_circle_feedback(coaching_focus)
+    if circle_mode:
+        min_gap_sec = min(min_gap_sec, float((os.getenv("VIDEO_OPENAI_CIRCLE_MIN_GAP_SEC") or "1.0").strip() or "1.0"))
+        max_moments = max(max_moments, int((os.getenv("VIDEO_OPENAI_CIRCLE_MAX_MOMENTS") or "25").strip() or "25"))
+
     debug: dict[str, Any] = {
         "outcome": "pending",
         "frames_offered": len(frames),
         "batches": 0,
         "raw_moment_count": 0,
+        "circle_mode": circle_mode,
     }
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -148,25 +176,55 @@ def select_coaching_moments_from_frames(
                 "text": (
                     f"Sport: {sport or 'Soccer'}. Player to coach: {player_focus or 'the focal athlete'}.\n"
                     f"Video duration: {duration_sec:.1f}s. These stills cover about {t0:.1f}s–{t1:.1f}s.\n"
-                    "Each image is labeled with its timestamp. Pick the most useful coaching moments "
-                    "for THIS player (on or off the ball): 1v1s, receives, scans, press, support angles, "
-                    "decisions, finishing, defensive actions.\n"
-                    "Do not pick moments just because a red circle is present. Ignore other players unless "
-                    "the focal player is involved.\n"
-                    "Return 0–5 moments. timestamp_sec must match a labeled frame time (or very close). "
-                    "If the focal player is not visible in this batch, return an empty moments list."
+                    + (
+                        "Each image is labeled with its timestamp. Pick EVERY timestamp where the named player "
+                        "is highlighted with a red circle overlay. Return one moment per distinct red-circle "
+                        "highlight (do not skip circles). timestamp_sec must match a labeled frame time (or very close).\n"
+                        "If no red circle highlights the focal player in this batch, return an empty moments list."
+                        if circle_mode
+                        else (
+                            "Each image is labeled with its timestamp. Pick the most useful coaching moments "
+                            "for THIS player (on or off the ball): 1v1s, receives, scans, press, support angles, "
+                            "decisions, finishing, defensive actions.\n"
+                            "Do not pick moments just because a red circle is present. Ignore other players unless "
+                            "the focal player is involved.\n"
+                            "Return 0–5 moments. timestamp_sec must match a labeled frame time (or very close). "
+                            "If the focal player is not visible in this batch, return an empty moments list."
+                        )
+                    )
                 ),
             }
         ]
         cf = (coaching_focus or "").strip()
         if cf:
-            user_parts.append({"type": "text", "text": f"Session direction from the coach: {cf[:800]}"})
+            user_parts.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "--- ADMIN SESSION BRIEF (MANDATORY when selecting moments) ---\n" + cf[:1200]
+                        if circle_mode
+                        else f"Session direction from the coach: {cf[:800]}"
+                    ),
+                }
+            )
         mem = (player_memory_context or "").strip()
         if mem:
             user_parts.append(
                 {
                     "type": "text",
-                    "text": "Player memory (style/themes only, do not invent events):\n" + mem[:4000],
+                    "text": (
+                        "--- PLAYER MEMORY (style/themes only, do not invent events) ---\n" + mem[:4000]
+                    ),
+                }
+            )
+        org = (shared_context or "").strip()
+        if org:
+            user_parts.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "--- SHARED CLUB RUBRIC (vocabulary and standards) ---\n" + org[:4000]
+                    ),
                 }
             )
         for frame in batch:
@@ -191,7 +249,12 @@ def select_coaching_moments_from_frames(
                         "role": "system",
                         "content": (
                             "You are a youth soccer coach selecting clip timestamps for later tactical feedback. "
-                            "Only choose moments that will teach the named player something specific."
+                            + (
+                                "When the admin brief asks for feedback at each red-circle highlight, return one "
+                                "moment per distinct circle — do not merge or skip visible circles."
+                                if circle_mode
+                                else "Only choose moments that will teach the named player something specific."
+                            )
                         ),
                     },
                     {"role": "user", "content": user_parts},
@@ -600,6 +663,16 @@ def vision_analyze_circle_segment(
                 cf[:3000],
             ]
         )
+        if coaching_wants_per_circle_feedback(cf):
+            user_lines.extend(
+                [
+                    "",
+                    "--- COACHING DIRECTIVE (MANDATORY) ---",
+                    "The admin requires one distinct feedback point for EACH separate red-circle highlight. "
+                    "This episode window should produce coaching for the circled player at this highlight only — "
+                    "do not skip or merge with other highlights.",
+                ]
+            )
     if org:
         user_lines.extend(
             [
@@ -1202,3 +1275,162 @@ def analyze_manual_moment(
     if parsed is None:
         raise RuntimeError("The model did not return manual feedback.")
     return parsed
+
+
+def analyze_video_direct_openai(
+    *,
+    video_url: str,
+    sport: str,
+    player_focus: str,
+    duration_sec: float,
+    analysis_scope: str,
+    coaching_focus: str,
+    player_memory_context: str | None = None,
+    shared_context: str | None = None,
+    base_dir: Path | None = None,
+) -> tuple[VideoFeedbackReview, dict[str, Any]]:
+    """
+    Send match video directly to OpenAI vision (file upload when small enough, else dense frame grid).
+    Skips YOLO / local circle detection — the model chooses coaching moments from the full clip.
+    """
+    from agents.feedback.highlight.cache import get_local_video
+    from agents.feedback.video_utils import extract_uniform_frames_in_range, probe_duration
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is missing. Add it to your environment or .env file.")
+
+    model = (
+        os.getenv("VIDEO_OPENAI_DIRECT_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or "gpt-4.1-mini"
+    ).strip()
+    client = OpenAI(api_key=api_key)
+    debug: dict[str, Any] = {"mode": "direct_openai_video", "model": model, "outcome": "pending"}
+
+    duration = duration_sec if duration_sec > 0 else probe_duration(video_url)
+    cached = get_local_video(video_url)
+    local_path = cached.cache_path if cached.cache_path and cached.cache_path.exists() else None
+    if local_path is None and not video_url.startswith(("http://", "https://")):
+        candidate = Path(video_url.replace("file://", ""))
+        if candidate.exists():
+            local_path = candidate
+
+    max_mb = float((os.getenv("VIDEO_OPENAI_DIRECT_MAX_MB") or "25").strip() or "25")
+    use_file_upload = False
+    uploaded_file_id: str | None = None
+    if local_path is not None:
+        size_mb = local_path.stat().st_size / (1024 * 1024)
+        debug["local_video_mb"] = round(size_mb, 2)
+        if size_mb <= max_mb:
+            try:
+                with local_path.open("rb") as handle:
+                    uploaded = client.files.create(file=handle, purpose="vision")
+                uploaded_file_id = uploaded.id
+                use_file_upload = True
+                debug["input_mode"] = "openai_file_upload"
+                debug["file_id"] = uploaded_file_id
+            except Exception as exc:  # noqa: BLE001
+                debug["file_upload_error"] = str(exc)[:500]
+                use_file_upload = False
+
+    mem = (player_memory_context or "").strip()
+    org = (shared_context or "").strip()
+    cf = (coaching_focus or "").strip()
+    circle_mode = coaching_wants_per_circle_feedback(coaching_focus)
+
+    prompt_lines = [
+        "You are a youth soccer video coach. Analyze this match clip and produce structured coaching feedback.",
+        f"Sport: {sport or 'Soccer'}",
+        f"Player focus: {player_focus or 'the named athlete'}",
+        f"Video duration (seconds): {duration:.1f}",
+        f"Analysis scope: {analysis_scope or 'Full visible clip.'}",
+    ]
+    if cf:
+        prompt_lines.extend(["", "--- ADMIN SESSION BRIEF ---", cf[:3000]])
+    if circle_mode:
+        prompt_lines.extend(
+            [
+                "",
+                "Create one coaching moment for EACH time the named player is highlighted with a red circle overlay.",
+                "Do not merge separate circle highlights into a single moment.",
+            ]
+        )
+    else:
+        prompt_lines.append(
+            "Create coaching moments for the named player at tactically meaningful points (on and off the ball)."
+        )
+    if mem:
+        prompt_lines.extend(
+            [
+                "",
+                "--- PLAYER MEMORY (style reference — match this coaching voice) ---",
+                mem[:12000],
+            ]
+        )
+    if org:
+        prompt_lines.extend(
+            [
+                "",
+                "--- SHARED CLUB RUBRIC ---",
+                org[:12000],
+            ]
+        )
+    prompt_lines.extend(
+        [
+            "",
+            "Return JSON with video_summary, overall_assessment, and moments (timestamp_sec, category, sentiment, coaching_note).",
+            "Ground every note in visible evidence. Tactical coaching only — no body-mechanics anatomy.",
+        ]
+    )
+    user_text = "\n".join(prompt_lines)
+
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
+    if use_file_upload and uploaded_file_id:
+        content.append({"type": "input_file", "file_id": uploaded_file_id})
+    else:
+        debug["input_mode"] = "dense_frame_grid"
+        max_frames = int((os.getenv("VIDEO_OPENAI_DIRECT_MAX_FRAMES") or "36").strip() or "36")
+        frame_dir = (base_dir or Path("/tmp")) / "direct_openai_frames"
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        frames = extract_uniform_frames_in_range(
+            video_url,
+            0.0,
+            duration,
+            frame_dir,
+            "direct",
+            max_frames=max_frames,
+            frame_width=int((os.getenv("VIDEO_OPENAI_DIRECT_FRAME_WIDTH") or "720").strip() or "720"),
+            video_duration_sec=duration,
+        )
+        debug["frame_count"] = len(frames)
+        for frame in frames:
+            content.append({"type": "input_text", "text": f"Frame t={frame.timestamp_sec:.2f}s"})
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{_encode_image(frame.image_path)}",
+                }
+            )
+        if not frames:
+            raise RuntimeError("Could not extract frames for direct OpenAI video analysis.")
+
+    system = _soccer_coaching_vision_system()
+    response = client.responses.parse(
+        model=model,
+        input=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ],
+        text_format=VideoFeedbackReview,
+    )
+    parsed = response.output_parsed
+    if parsed is None:
+        debug["outcome"] = "error"
+        raise RuntimeError("Direct OpenAI video analysis returned no parsed payload.")
+
+    debug["outcome"] = "success"
+    debug["moment_count"] = len(parsed.moments or [])
+    debug["system_message"] = _truncate_for_debug_text(system)
+    debug["user_message_text"] = _truncate_for_debug_text(user_text)
+    return parsed, debug

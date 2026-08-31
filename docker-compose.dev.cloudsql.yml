@@ -1,0 +1,28 @@
+# Local Docker dev + Cloud SQL (hot reload, no local Postgres).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+#     -f docker-compose.dev.cloudsql.yml --profile cloudsql up -d --build
+#
+# Or: make run-dev-cloudsql
+#
+# Repo-root .env must set CLOUD_SQL_CONNECTION_NAME, CLOUDSQL_USER, CLOUDSQL_PASSWORD, CLOUDSQL_DATABASE.
+
+services:
+  api:
+    depends_on:
+      redis:
+        condition: service_healthy
+      cloud-sql-proxy:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}
+
+  worker:
+    depends_on:
+      redis:
+        condition: service_healthy
+      cloud-sql-proxy:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg://${CLOUDSQL_USER}:${CLOUDSQL_PASSWORD}@cloud-sql-proxy:5432/${CLOUDSQL_DATABASE}

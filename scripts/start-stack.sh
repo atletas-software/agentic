@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start Redis (if installed), API :8000, RQ worker, feedback agent :5055.
+# Start Redis (if installed), API :8000, and RQ worker. Review UI is served from the API.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,15 +20,8 @@ if [[ -f app/backendapi/.env ]]; then
   source app/backendapi/.env
   set +a
 fi
-if [[ -f app/agents/.env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source app/agents/.env
-  set +a
-fi
 
 export PYTHONPATH="${ROOT}/app"
-export FEEDBACK_AGENT_BASE_URL="${FEEDBACK_AGENT_BASE_URL:-http://127.0.0.1:5055}"
 export FEEDBACK_USE_POSE_PIPELINE="${FEEDBACK_USE_POSE_PIPELINE:-false}"
 if [[ -n "${FEEDBACK_PUBLIC_BASE_URL:-}" ]]; then
   export PUBLIC_BASE_URL="${FEEDBACK_PUBLIC_BASE_URL}"
@@ -83,22 +76,14 @@ echo "Starting RQ worker..."
 nohup python -m backendapi.workers.run_worker > /tmp/agentic-worker.log 2>&1 &
 echo "  PID $!  log: /tmp/agentic-worker.log"
 
-sleep 1
-
-echo "Starting feedback agent on :5055..."
-if [[ -n "${FEEDBACK_PUBLIC_BASE_URL:-}" ]]; then
-  export PUBLIC_BASE_URL="${FEEDBACK_PUBLIC_BASE_URL}"
-fi
-nohup uvicorn agents.feedback.main:app --host 0.0.0.0 --port 5055 > /tmp/agentic-feedback.log 2>&1 &
-echo "  PID $!  log: /tmp/agentic-feedback.log"
-
 sleep 2
 echo ""
 echo "Health:"
 curl -sf http://127.0.0.1:8000/health && echo "  API OK" || echo "  API not ready"
-curl -sf -o /dev/null http://127.0.0.1:5055/ && echo "  Feedback agent OK" || echo "  Feedback agent not ready"
+curl -sf -o /dev/null http://127.0.0.1:8000/feedback-agent/health 2>/dev/null && echo "  Feedback routes OK" || true
 echo ""
+echo "Review pages: FRONTEND_BASE_URL/review/{id} (proxied to API :8000)"
 echo "YOLO_POSE_DEVICE=${YOLO_POSE_DEVICE:-not set}"
 echo "YOLO_HIGHLIGHT_WEIGHTS=${YOLO_HIGHLIGHT_WEIGHTS:-not set}"
 echo "FEEDBACK_PUBLIC_BASE_URL=${FEEDBACK_PUBLIC_BASE_URL:-not set}"
-echo "Logs: tail -f /tmp/agentic-api.log /tmp/agentic-worker.log /tmp/agentic-feedback.log"
+echo "Logs: tail -f /tmp/agentic-api.log /tmp/agentic-worker.log"

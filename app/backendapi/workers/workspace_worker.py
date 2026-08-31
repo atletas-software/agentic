@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,7 @@ from backendapi.services.feedback_public_url import (
     feedback_public_status_url,
     feedback_public_watch_url,
 )
+from backendapi.services.feedback_runner import run_feedback_review_inprocess
 from backendapi.services.sheet_sync import SYNC_DESTINATION_HEADERS
 from backendapi.services.player_directory import resolve_player_key_by_name
 from backendapi.services.pose_video_pipeline import (
@@ -398,17 +400,148 @@ def process_video_processing_job(agent_job_id: int) -> dict[str, Any]:
 process_video_processing_stub_job = process_video_processing_job
 
 
+def _truthy_env(name: str, default: str = "false") -> bool:
+    return (os.getenv(name) or default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _feedback_use_http_delegate() -> bool:
+    """Use standalone feedback-agent HTTP when explicitly enabled and URL is set."""
+    base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        return False
+    return _truthy_env("FEEDBACK_DELEGATE_HTTP", "false")
+
+
+def _process_feedback_delegate_http(
+    *,
+    db,
+    job: AgentJob,
+    agent_job_id: int,
+    body: dict[str, Any],
+    text_only: bool,
+) -> dict[str, str | bool]:
+    base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").rstrip("/")
+    url = f"{base}/api/reviews"
+    _timeout_key = "FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS_TEXT" if text_only else "FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS"
+    _timeout_default = "180" if text_only else "30"
+    timeout = float(os.getenv(_timeout_key) or _timeout_default)
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(url, json=body)
+    if resp.status_code >= 400:
+        job.status = "FAILED"
+        job.error_message = f"Feedback agent HTTP {resp.status_code}: {resp.text[:2000]}"
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": False, "status_code": resp.status_code}
+
+    data = resp.json()
+    review_id = str(data.get("id") or "").strip()
+    if not review_id:
+        job.status = "FAILED"
+        job.error_message = "Feedback agent POST did not return a review id"
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": False, "error": "no_review_id"}
+
+    job.external_ref = review_id
+    try:
+        boot = json.loads(job.result_json or "{}")
+    except json.JSONDecodeError:
+        boot = {}
+    boot["feedback_agent_poll"] = {
+        "review_id": review_id,
+        "status": "submitted",
+        "progress_detail": "Feedback agent is processing video (this can take many minutes).",
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    job.result_json = json.dumps(boot, ensure_ascii=True)
+    db.commit()
+
+    def _flush_feedback_status(status_payload: dict[str, Any]) -> None:
+        j = db.get(AgentJob, agent_job_id)
+        if j is None:
+            return
+        try:
+            prev = json.loads(j.result_json or "{}")
+        except json.JSONDecodeError:
+            prev = {}
+        prev["feedback_agent_poll"] = {
+            "review_id": review_id,
+            "status": status_payload.get("status"),
+            "phase": status_payload.get("phase"),
+            "progress_detail": status_payload.get("progress_detail"),
+            "probe_current": status_payload.get("probe_current"),
+            "probe_estimate": status_payload.get("probe_estimate"),
+            "segment_current": status_payload.get("segment_current"),
+            "segment_total": status_payload.get("segment_total"),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        j.external_ref = review_id
+        j.result_json = json.dumps(prev, ensure_ascii=True)
+        db.commit()
+
+    poll_out, poll_err = _poll_feedback_review_until_done(
+        base,
+        review_id,
+        text_only=text_only,
+        agent_job_id=agent_job_id,
+        on_status=_flush_feedback_status,
+    )
+    if poll_out == "cancelled":
+        job.status = "FAILED"
+        job.error_message = poll_err or "Cancelled by user."
+        job.external_ref = review_id
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": False, "error": "cancelled"}
+    if poll_out == "failed":
+        job.status = "FAILED"
+        job.error_message = poll_err or "feedback_review_failed"
+        job.external_ref = review_id
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": False, "error": "review_failed"}
+    if poll_out == "timeout":
+        job.status = "FAILED"
+        job.error_message = poll_err or "feedback_review_poll_timeout"
+        job.external_ref = review_id
+        job.completed_at = datetime.now(UTC)
+        db.commit()
+        return {"ok": False, "error": "poll_timeout"}
+
+    job.status = "SUCCESS"
+    job.external_ref = review_id
+    review_url = feedback_public_review_url(review_id)
+    watch_url = feedback_public_watch_url(review_id)
+    status_url = feedback_public_status_url(review_id)
+    job.result_json = json.dumps(
+        {
+            "id": review_id,
+            "create_response": data,
+            "feedback_execution": "http_delegate",
+            "feedback_poll": "completed",
+            "review_url": review_url,
+            "watch_url": watch_url,
+            "status_url": status_url,
+        },
+        ensure_ascii=True,
+    )
+    job.completed_at = datetime.now(UTC)
+    db.commit()
+    info("feedback_delegate_complete", agent_job_id=agent_job_id, external_ref=job.external_ref)
+    return {"ok": True, "delegated": True, "review_id": job.external_ref}
+
+
 def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
     """
-    Delegates to the Feedback Agent FastAPI service when FEEDBACK_AGENT_BASE_URL is set.
-    POST {base}/api/reviews with video_url and optional fields from job payload.
+    Run feedback in-process by default (agents.feedback code in the same worker).
+    Set FEEDBACK_DELEGATE_HTTP=true and FEEDBACK_AGENT_BASE_URL to use the legacy HTTP agent.
     """
     db = SessionLocal()
     try:
         job = db.get(AgentJob, agent_job_id)
         if job is None:
             return {"ok": False, "error": "job_not_found"}
-        base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").rstrip("/")
         job.status = "RUNNING"
         job.started_at = datetime.now(UTC)
         db.commit()
@@ -420,16 +553,6 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             db.commit()
             clear_agent_job_cancel_requested(agent_job_id)
             return {"ok": False, "error": "cancelled"}
-
-        if not base:
-            job.status = "SKIPPED"
-            job.error_message = (
-                "FEEDBACK_AGENT_BASE_URL is not set. Run the feedback agent "
-                "(PYTHONPATH=app uvicorn agents.feedback.main:app --port 5055) or set the URL."
-            )
-            job.completed_at = datetime.now(UTC)
-            db.commit()
-            return {"ok": True, "delegated": False}
 
         payload = json.loads(job.payload_json or "{}")
         body, ctx_meta, text_only, video_url = _build_feedback_delegate_body(db, job, payload)
@@ -508,46 +631,33 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             agent_job_id=agent_job_id,
             text_only=text_only,
             auto_text_only_host=auto_text_only_host,
+            in_process=not _feedback_use_http_delegate(),
             **ctx_meta,
         )
 
-        url = f"{base}/api/reviews"
-        _timeout_key = "FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS_TEXT" if text_only else "FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS"
-        _timeout_default = "180" if text_only else "30"
-        timeout = float(os.getenv(_timeout_key) or _timeout_default)
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(url, json=body)
-        if resp.status_code >= 400:
-            job.status = "FAILED"
-            job.error_message = f"Feedback agent HTTP {resp.status_code}: {resp.text[:2000]}"
-            job.completed_at = datetime.now(UTC)
-            db.commit()
-            return {"ok": False, "status_code": resp.status_code}
+        if _feedback_use_http_delegate():
+            return _process_feedback_delegate_http(
+                db=db,
+                job=job,
+                agent_job_id=agent_job_id,
+                body=body,
+                text_only=text_only,
+            )
 
-        data = resp.json()
-        review_id = str(data.get("id") or "").strip()
-        if not review_id:
-            job.status = "FAILED"
-            job.error_message = "Feedback agent POST did not return a review id"
-            job.completed_at = datetime.now(UTC)
-            db.commit()
-            return {"ok": False, "error": "no_review_id"}
-
+        review_id = uuid.uuid4().hex[:12]
         job.external_ref = review_id
-        try:
-            boot = json.loads(job.result_json or "{}")
-        except json.JSONDecodeError:
-            boot = {}
-        boot["feedback_agent_poll"] = {
-            "review_id": review_id,
-            "status": "submitted",
-            "progress_detail": "Feedback agent is processing video (this can take many minutes).",
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-        job.result_json = json.dumps(boot, ensure_ascii=True)
+        job.result_json = json.dumps(
+            {
+                "id": review_id,
+                "feedback_execution": "in_process",
+                "status": "running",
+                "progress_detail": "Running feedback pipeline in worker…",
+            },
+            ensure_ascii=True,
+        )
         db.commit()
 
-        def _flush_feedback_status(status_payload: dict[str, Any]) -> None:
+        def _flush_inprocess_status(status_payload: dict[str, Any]) -> None:
             j = db.get(AgentJob, agent_job_id)
             if j is None:
                 return
@@ -555,49 +665,42 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
                 prev = json.loads(j.result_json or "{}")
             except json.JSONDecodeError:
                 prev = {}
-            prev["feedback_agent_poll"] = {
-                "review_id": review_id,
-                "status": status_payload.get("status"),
-                "phase": status_payload.get("phase"),
-                "progress_detail": status_payload.get("progress_detail"),
-                "probe_current": status_payload.get("probe_current"),
-                "probe_estimate": status_payload.get("probe_estimate"),
-                "segment_current": status_payload.get("segment_current"),
-                "segment_total": status_payload.get("segment_total"),
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
+            prev.update(
+                {
+                    "id": review_id,
+                    "feedback_execution": "in_process",
+                    "status": status_payload.get("status", "running"),
+                    "phase": status_payload.get("phase"),
+                    "progress_detail": status_payload.get("progress_detail"),
+                    "probe_current": status_payload.get("probe_current"),
+                    "probe_estimate": status_payload.get("probe_estimate"),
+                    "segment_current": status_payload.get("segment_current"),
+                    "segment_total": status_payload.get("segment_total"),
+                    "updated_at": datetime.now(UTC).isoformat(),
+                }
+            )
             j.external_ref = review_id
             j.result_json = json.dumps(prev, ensure_ascii=True)
             db.commit()
 
-        poll_out, poll_err = _poll_feedback_review_until_done(
-            base,
-            review_id,
-            text_only=text_only,
-            agent_job_id=agent_job_id,
-            on_status=_flush_feedback_status,
-        )
-        if poll_out == "cancelled":
-            job.status = "FAILED"
-            job.error_message = poll_err or "Cancelled by user."
+        try:
+            run_feedback_review_inprocess(
+                review_id,
+                body,
+                on_progress=_flush_inprocess_status,
+                cancel_check=lambda: agent_job_cancel_requested(agent_job_id),
+            )
+        except Exception as exc:
+            if agent_job_cancel_requested(agent_job_id):
+                job.status = "FAILED"
+                job.error_message = "Cancelled by user."
+            else:
+                job.status = "FAILED"
+                job.error_message = str(exc)[:2000]
             job.external_ref = review_id
             job.completed_at = datetime.now(UTC)
             db.commit()
-            return {"ok": False, "error": "cancelled"}
-        if poll_out == "failed":
-            job.status = "FAILED"
-            job.error_message = poll_err or "feedback_review_failed"
-            job.external_ref = review_id
-            job.completed_at = datetime.now(UTC)
-            db.commit()
-            return {"ok": False, "error": "review_failed"}
-        if poll_out == "timeout":
-            job.status = "FAILED"
-            job.error_message = poll_err or "feedback_review_poll_timeout"
-            job.external_ref = review_id
-            job.completed_at = datetime.now(UTC)
-            db.commit()
-            return {"ok": False, "error": "poll_timeout"}
+            return {"ok": False, "error": job.error_message}
 
         job.status = "SUCCESS"
         job.external_ref = review_id
@@ -607,7 +710,7 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
         job.result_json = json.dumps(
             {
                 "id": review_id,
-                "create_response": data,
+                "feedback_execution": "in_process",
                 "feedback_poll": "completed",
                 "review_url": review_url,
                 "watch_url": watch_url,
@@ -617,8 +720,8 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
         )
         job.completed_at = datetime.now(UTC)
         db.commit()
-        info("feedback_delegate_complete", agent_job_id=agent_job_id, external_ref=job.external_ref)
-        return {"ok": True, "delegated": True, "review_id": job.external_ref}
+        info("feedback_inprocess_complete", agent_job_id=agent_job_id, external_ref=review_id)
+        return {"ok": True, "delegated": False, "in_process": True, "review_id": review_id}
     except Exception as exc:  # noqa: BLE001
         err = str(exc)
         error("feedback_delegate_job_failed", agent_job_id=agent_job_id, error=err)

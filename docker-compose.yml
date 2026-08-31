@@ -1,20 +1,26 @@
-# GCP VM production stack: api + worker + feedback-agent + redis.
+# Platform stack: api + worker + redis. Review UI and YOLO feedback run on api/worker (:8000).
 name: athlete-agent
 #
-# Application secrets and URLs: app/backendapi/.env, app/agents/.env
-# Compose interpolation only (repo-root .env): ports, Sheets JSON path, Cloud SQL vars.
+# Application secrets: app/backendapi/.env
+# Compose interpolation (repo-root .env): ports, Sheets JSON, Cloud SQL, YOLO weight paths.
 #
-# GCP VM (recommended):
-#   - Firestore + Cloud SQL: VM service account via ADC (roles/datastore.user + roles/cloudsql.client).
-#   - Google Sheets only: credentials.json mounted at /run/secrets/google-credentials.json.
-#   - Do NOT set GOOGLE_APPLICATION_CREDENTIALS in app/backendapi/.env on the VM.
-#   - Cloud SQL: docker-compose.cloudsql.yml + --profile cloudsql (see .env.example).
+# Local Docker with YOLO + Postgres hot reload:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 #
-# Compose overrides below win over app/backendapi/.env for in-cluster hostnames only.
+# GCP VM production:
+#   docker compose up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.cloudsql.yml --profile cloudsql up -d --build
 #
-# Optional Cloud SQL Auth Proxy (no authorized-network IP whitelist):
-#   CLOUD_SQL_CONNECTION_NAME=project:region:instance  in repo-root .env
-#   docker compose --profile cloudsql up -d --build
+# Optional legacy standalone feedback agent (:5055):
+#   docker compose --profile feedback-agent up -d --build
+
+x-yolo-environment: &yolo-environment
+  YOLO_HIGHLIGHT_WEIGHTS: /app/app/agents/feedback/models/highlight_yolo_v1.pt
+  YOLO_POSE_DEVICE: ${YOLO_POSE_DEVICE:-cpu}
+  YOLO_POSE_WEIGHTS: ${YOLO_POSE_WEIGHTS:-yolov8n-pose.pt}
+  VIDEO_HIGHLIGHT_DETECTOR: yolo
+  POSE_PIPELINE_OUTPUT_DIR: /app/data/pose
+  FEEDBACK_USE_POSE_PIPELINE: ${FEEDBACK_USE_POSE_PIPELINE:-false}
 
 services:
   api:
@@ -27,13 +33,16 @@ services:
     environment:
       PYTHONPATH: /app/app
       REDIS_URL: redis://redis:6379/0
-      FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
+      DATA_DIR: /app/data
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
+      <<: *yolo-environment
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
-      # Sheets API only — not used for Firestore or Cloud SQL (VM service account handles those).
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+      - feedback_data:/app/data
+      - ./app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt:/app/app/agents/feedback/models/highlight_yolo_v1.pt:ro
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
     depends_on:
       redis:
         condition: service_healthy
@@ -64,37 +73,37 @@ services:
     environment:
       PYTHONPATH: /app/app
       REDIS_URL: redis://redis:6379/0
-      FEEDBACK_AGENT_BASE_URL: http://feedback-agent:5055
+      DATA_DIR: /app/data
       DESTINATION_GOOGLE_CREDENTIALS_FILE: /run/secrets/google-credentials.json
-      # Slim worker has no torch — YOLO runs in feedback-agent only.
-      POSE_PIPELINE_REMOTE_ONLY: "true"
-      FEEDBACK_USE_POSE_PIPELINE: "false"
+      POSE_PIPELINE_REMOTE_ONLY: ${POSE_PIPELINE_REMOTE_ONLY:-true}
+      <<: *yolo-environment
     volumes:
       - ${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}:/run/secrets/google-credentials.json:ro
+      - feedback_data:/app/data
+      - ./app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt:/app/app/agents/feedback/models/highlight_yolo_v1.pt:ro
+      - ./app/yolo_model/artifacts/pose:/app/app/yolo_model/artifacts/pose
     depends_on:
       redis:
         condition: service_healthy
-      feedback-agent:
-        condition: service_started
       cloud-sql-proxy:
         condition: service_started
         required: false
     init: true
     restart: unless-stopped
 
+  # Legacy standalone feedback agent
   feedback-agent:
+    profiles: ["feedback-agent"]
     build:
       context: .
       dockerfile: app/agents/feedback/Dockerfile
     container_name: athlete-agent-feedback
     env_file:
       - app/backendapi/.env
-      - app/agents/.env
     environment:
       PYTHONPATH: /app
       YOLO_POSE_DEVICE: cpu
       YOLO_POSE_WEIGHTS: yolov8n-pose.pt
-      # Baked in feedback-agent image; do not point at empty /run/models unless file exists there.
       YOLO_HIGHLIGHT_WEIGHTS: /app/agents/feedback/models/highlight_yolo_v1.pt
       VIDEO_HIGHLIGHT_DETECTOR: yolo
       FEEDBACK_USE_POSE_PIPELINE: "false"
@@ -103,7 +112,6 @@ services:
       - "${FEEDBACK_AGENT_PORT:-5055}:5055"
     volumes:
       - feedback_agent_data:/app/data
-      # Weights from git checkout — no image rebuild needed when disk is tight on the VM.
       - ./app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt:/app/agents/feedback/models/highlight_yolo_v1.pt:ro
     command: ["uvicorn", "agents.feedback.main:app", "--host", "0.0.0.0", "--port", "5055"]
     init: true
@@ -125,6 +133,7 @@ services:
       - "${POSE_API_PORT:-5060}:5060"
     volumes:
       - pose_api_data:/app/data
+      - ./app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt:/app/yolo_model/artifacts/train/highlight_v1.1.0/weights/best.pt:ro
     restart: unless-stopped
 
   redis:
@@ -141,14 +150,27 @@ services:
     profiles: ["cloudsql"]
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.3
     container_name: athlete-agent-cloud-sql-proxy
-    # Authenticates with the GCE VM attached service account (metadata). No credentials.json.
-    # Image ENTRYPOINT is already /cloud-sql-proxy — do not repeat it in command.
+    environment:
+      CLOUD_SQL_CONNECTION_NAME: ${CLOUD_SQL_CONNECTION_NAME}
+      # Local Mac/Linux: 1 (use credentials.json). GCP VM with metadata ADC: 0.
+      CLOUDSQL_USE_CREDENTIALS_FILE: ${CLOUDSQL_USE_CREDENTIALS_FILE:-1}
+    volumes:
+      - ${CLOUDSQL_CREDENTIALS_FILE_HOST:-${GOOGLE_CREDENTIALS_FILE_HOST:-./credentials.json}}:/run/secrets/cloudsql-credentials.json:ro
     command:
-      - --address=0.0.0.0
-      - --port=5432
-      - ${CLOUD_SQL_CONNECTION_NAME}
+      - sh
+      - -c
+      - |
+          set -e
+          if [ "$${CLOUDSQL_USE_CREDENTIALS_FILE}" = "1" ] && [ -f /run/secrets/cloudsql-credentials.json ]; then
+            exec /cloud-sql-proxy --address=0.0.0.0 --port=5432 \
+              --credentials-file=/run/secrets/cloudsql-credentials.json \
+              "$${CLOUD_SQL_CONNECTION_NAME}"
+          else
+            exec /cloud-sql-proxy --address=0.0.0.0 --port=5432 "$${CLOUD_SQL_CONNECTION_NAME}"
+          fi
     restart: unless-stopped
 
 volumes:
+  feedback_data:
   feedback_agent_data:
   pose_api_data:

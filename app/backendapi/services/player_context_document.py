@@ -64,7 +64,7 @@ def document_from_sql_row(row: dict[str, str]) -> dict[str, Any]:
 
     Fields: player_user_id, player_name, club_name, profile_text, videos[], feedback{}
     """
-    player_id_raw = _scalar(row, "player_user_id", "reviewee_id", "player_id")
+    player_id_raw = _scalar(row, "reviewee_id", "player_user_id", "player_id")
     player_user_id = int(player_id_raw) if str(player_id_raw).isdigit() else player_id_raw
     player_name = clean_embedding_text(_scalar(row, "player_name", "reviewee_name"), min_length=0)
     club_name = clean_embedding_text(_scalar(row, "club_name"), min_length=0)

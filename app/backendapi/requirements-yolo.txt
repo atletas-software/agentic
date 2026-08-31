@@ -1,0 +1,11 @@
+ultralytics==8.3.27
+pytesseract==0.3.13
+matplotlib
+scipy
+pandas
+seaborn
+psutil
+py-cpuinfo
+requests
+tqdm
+ultralytics-thop

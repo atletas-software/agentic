@@ -36,10 +36,13 @@ def merge_agent_job_result_json(job: AgentJob, patch: dict[str, Any]) -> None:
 
 
 def request_feedback_agent_cancel(review_id: str) -> None:
-    """Ask the feedback agent to stop its background thread for this review (writes cancel_requested)."""
+    """Stop an in-process or HTTP feedback review for this review id."""
     rid = (review_id or "").strip()
     if not rid:
         return
+    from backendapi.services.feedback_runner import request_review_cancel
+
+    request_review_cancel(rid)
     base = (os.getenv("FEEDBACK_AGENT_BASE_URL") or "").strip().rstrip("/")
     if not base:
         return

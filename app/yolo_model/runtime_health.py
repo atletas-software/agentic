@@ -42,9 +42,11 @@ def check_yolo_runtime() -> dict[str, Any]:
     out["highlight_weights_env"] = (os.getenv("YOLO_HIGHLIGHT_WEIGHTS") or "").strip() or None
     candidates = [
         out["highlight_weights_env"],
+        "/app/app/agents/feedback/models/highlight_yolo_v1.pt",
         "/app/agents/feedback/models/highlight_yolo_v1.pt",
         "/run/models/highlight_yolo_v1.pt",
         str(root / "yolo_model" / "artifacts" / "train" / "highlight_v1.1.0" / "weights" / "best.pt"),
+        str(root / "agents" / "feedback" / "models" / "highlight_yolo_v1.pt"),
     ]
     seen: set[str] = set()
     checked: list[dict[str, Any]] = []
