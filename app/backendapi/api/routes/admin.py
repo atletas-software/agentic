@@ -878,6 +878,12 @@ async def admin_update_personal_player_label(
     return {"ok": True, "player_key": pk, "display_name": body.display_name.strip()}
 
 
+_SPORTAL_PROFILE_SELECT = """
+    SELECT user_id AS player_id, id AS profile_id, first_name, last_name, email
+    FROM sportal.profile
+"""
+
+
 def _normalize_external_profile_row(row: dict[str, Any]) -> dict[str, Any]:
     """MySQL drivers may return mixed-case keys; UI needs stable snake_case strings."""
     d = {str(k).lower(): v for k, v in row.items()}
@@ -886,12 +892,26 @@ def _normalize_external_profile_row(row: dict[str, Any]) -> dict[str, Any]:
         pid_int = int(pid) if pid is not None else 0
     except (TypeError, ValueError):
         pid_int = 0
+    profile_id_raw = d.get("profile_id")
+    try:
+        profile_id_int = int(profile_id_raw) if profile_id_raw is not None else 0
+    except (TypeError, ValueError):
+        profile_id_int = 0
+    if profile_id_int <= 0:
+        profile_id_int = pid_int
     return {
+        # player_id is Sportal user_id — matches :player_user_id in sync SQL.
         "player_id": pid_int,
+        "profile_id": profile_id_int,
         "first_name": str(d.get("first_name") or ""),
         "last_name": str(d.get("last_name") or ""),
         "email": str(d.get("email") or ""),
     }
+
+
+def _sportal_sync_player_id(profile: dict[str, Any]) -> int:
+    """Canonical athlete key for SQL sync (:player_user_id bind)."""
+    return int(profile["player_id"])
 
 
 @router.get("/player-memory/external-profiles")
@@ -927,15 +947,15 @@ async def admin_list_external_profiles(
             if search:
                 pat = f"%{search.lower()}%"
                 stmt = text(
-                    """
-                SELECT id AS player_id, first_name, last_name, email
-                FROM sportal.profile
+                    f"""
+                {_SPORTAL_PROFILE_SELECT}
                 WHERE LOWER(CONCAT(
                     COALESCE(first_name, ''), ' ',
                     COALESCE(last_name, ''), ' ',
                     COALESCE(email, ''), ' ',
                     COALESCE(SUBSTRING_INDEX(email, '@', 1), ''), ' ',
-                    CAST(id AS CHAR)
+                    CAST(id AS CHAR), ' ',
+                    CAST(user_id AS CHAR)
                 )) LIKE :pat
                 ORDER BY id DESC
                 LIMIT :lim OFFSET :off
@@ -944,9 +964,8 @@ async def admin_list_external_profiles(
                 res = conn.execute(stmt, {"pat": pat, "lim": limit, "off": offset})
             else:
                 stmt = text(
-                    """
-                SELECT id AS player_id, first_name, last_name, email
-                FROM sportal.profile
+                    f"""
+                {_SPORTAL_PROFILE_SELECT}
                 ORDER BY id DESC
                 LIMIT :lim OFFSET :off
                 """
@@ -983,10 +1002,9 @@ def _lookup_sportal_profile_by_id(db: Session, player_id: int) -> dict[str, Any]
         with eng.connect() as conn:
             res = conn.execute(
                 text(
-                    """
-                SELECT id AS player_id, first_name, last_name, email
-                FROM sportal.profile
-                WHERE id = :pid
+                    f"""
+                {_SPORTAL_PROFILE_SELECT}
+                WHERE id = :pid OR user_id = :pid
                 LIMIT 1
                 """
                 ),
@@ -1024,11 +1042,10 @@ def _lookup_sportal_profiles_by_query(db: Session, query: str, *, limit: int = 8
         with eng.connect() as conn:
             res = conn.execute(
                 text(
-                    """
-                SELECT id AS player_id, first_name, last_name, email
-                FROM sportal.profile
+                    f"""
+                {_SPORTAL_PROFILE_SELECT}
                 WHERE
-                    (:is_id = 1 AND id = :pid)
+                    (:is_id = 1 AND (id = :pid OR user_id = :pid))
                     OR LOWER(TRIM(COALESCE(email, ''))) = :exact
                     OR LOWER(SUBSTRING_INDEX(COALESCE(email, ''), '@', 1)) = :exact
                     OR LOWER(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')))) = :exact
@@ -1036,11 +1053,12 @@ def _lookup_sportal_profiles_by_query(db: Session, query: str, *, limit: int = 8
                         COALESCE(first_name, ''), ' ',
                         COALESCE(last_name, ''), ' ',
                         COALESCE(email, ''), ' ',
-                        CAST(id AS CHAR)
+                        CAST(id AS CHAR), ' ',
+                        CAST(user_id AS CHAR)
                     )) LIKE :pat
                 ORDER BY
                     CASE
-                        WHEN :is_id = 1 AND id = :pid THEN 0
+                        WHEN :is_id = 1 AND (id = :pid OR user_id = :pid) THEN 0
                         WHEN LOWER(TRIM(COALESCE(email, ''))) = :exact THEN 1
                         WHEN LOWER(SUBSTRING_INDEX(COALESCE(email, ''), '@', 1)) = :exact THEN 2
                         WHEN LOWER(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, '')))) = :exact THEN 3
@@ -1093,7 +1111,7 @@ def _lookup_sportal_profiles_by_filters(
     params: dict[str, Any] = {"lim": max(1, min(limit, 50))}
 
     if player_id is not None and player_id > 0:
-        clauses.append("id = :pid")
+        clauses.append("(id = :pid OR user_id = :pid)")
         params["pid"] = player_id
 
     if email_q:
@@ -1135,8 +1153,7 @@ def _lookup_sportal_profiles_by_filters(
         params["full_name"] = full_name
 
     sql = f"""
-        SELECT id AS player_id, first_name, last_name, email
-        FROM sportal.profile
+        {_SPORTAL_PROFILE_SELECT}
         WHERE {where_sql}
         ORDER BY {", ".join(order_bits)}
         LIMIT :lim
@@ -1235,10 +1252,16 @@ async def admin_enqueue_player_sql_sync(
     ws = ensure_workspace(user_id="0", db=db)
     fn = body.first_name.strip() or str(profile.get("first_name") or "")
     ln = body.last_name.strip() or str(profile.get("last_name") or "")
-    ok = enqueue_sql_player_sync_single_job(ws.id, body.player_id, fn, ln)
+    sync_player_id = _sportal_sync_player_id(profile)
+    ok = enqueue_sql_player_sync_single_job(ws.id, sync_player_id, fn, ln)
     if not ok:
         raise HTTPException(status_code=503, detail="Could not enqueue SQL sync job.")
-    return {"queued": True, "workspace_id": ws.id, "player_id": body.player_id}
+    return {
+        "queued": True,
+        "workspace_id": ws.id,
+        "player_id": sync_player_id,
+        "profile_id": profile.get("profile_id"),
+    }
 
 
 @router.post("/player-memory/run-sql-sync-player")
@@ -1256,11 +1279,12 @@ async def admin_run_player_sql_sync_inline(
     ws = ensure_workspace(user_id="0", db=db)
     fn = body.first_name.strip() or str(profile.get("first_name") or "")
     ln = body.last_name.strip() or str(profile.get("last_name") or "")
+    sync_player_id = _sportal_sync_player_id(profile)
     try:
         result = sync_sql_context_for_workspace(
             db=db,
             workspace_id=ws.id,
-            single_player={"player_id": body.player_id, "first_name": fn, "last_name": ln},
+            single_player={"player_id": sync_player_id, "first_name": fn, "last_name": ln},
         )
     except OperationalError as exc:
         _raise_sportal_db_http_error(exc)
@@ -1278,7 +1302,10 @@ async def admin_run_player_sql_sync_inline(
             status_code=400,
             detail=str(result.get("detail") or result.get("reason") or "SQL sync failed"),
         )
-    return dict(result)
+    out = dict(result)
+    out["player_id"] = sync_player_id
+    out["profile_id"] = profile.get("profile_id")
+    return out
 
 
 @router.get("/users")
