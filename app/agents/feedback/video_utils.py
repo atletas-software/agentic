@@ -506,7 +506,7 @@ def probe_circle_timeline(
         idx += 1
         if cancel_check is not None and (idx % 8 == 1 or idx <= 2) and cancel_check():
             raise RuntimeError("Review cancelled by user")
-        ts = round(min(max(t, 0.0), max(0.0, duration_sec - 0.02)), 3)
+        ts = round(min(max(t, 0.0), max(0.0, duration_sec - 0.25)), 3)
         path = output_dir / f"probe_{idx:05d}.jpg"
         if on_progress and (idx == 1 or idx % 25 == 0 or idx >= probe_estimate):
             on_progress(
@@ -520,7 +520,35 @@ def probe_circle_timeline(
                     ),
                 }
             )
-        extract_frame_at_timestamp(video_url, ts, path, frame_width=640)
+        # Near EOF, ffmpeg often exits 0 with no JPEG (or seek fails). Skip that sample
+        # instead of failing the whole multi-minute probe pass.
+        try:
+            extract_frame_at_timestamp(video_url, ts, path, frame_width=640)
+        except RuntimeError as exc:
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            # Treat as no-overlay sample so segments still build from successful probes.
+            out.append((ts, False))
+            t += interval
+            if on_progress and (idx == 1 or idx % 50 == 0 or idx >= probe_estimate):
+                on_progress(
+                    {
+                        "phase": "circle_timeline_probe",
+                        "probe_current": idx,
+                        "probe_estimate": probe_estimate,
+                        "progress_detail": (
+                            f"Skipped probe {idx} at {ts}s (frame extract failed): {str(exc)[:120]}"
+                        ),
+                    }
+                )
+            continue
+        if not _jpeg_output_usable(path):
+            out.append((ts, False))
+            t += interval
+            continue
         overlay = detect_highlight_overlay(
             path,
             player_first_name=player_first_name,
