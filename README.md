@@ -21,18 +21,24 @@ Application code lives under **`app/`**:
 ```
 app/
   backendapi/    platform FastAPI (sheets, sync, auth, workers) — Python package `backendapi`
-  agents/        feedback agent service — Python package `agents`
+  agents/        pluggable feedback agents — Python package `agents` (v1 = feedback/, v2 template = feedback_v2/)
   yolo_model/    YOLO training + pose pipeline — Python package `yolo_model`
+  pose_api/      optional GPU pose HTTP service
 ```
 
 Set **`PYTHONPATH=app`** (or `export PYTHONPATH="${PWD}/app"` from the repo root) when running locally.
 
-The repository contains **two runnable services**:
+Default runtime is **two processes** (feedback runs **in-process** on the worker via `FEEDBACK_AGENT_VERSION`):
 
-1. **Platform API** (`app/backendapi/`) — main FastAPI app (sheets, sync, auth, workspace/agent job orchestration).
-2. **Feedback agent** (`app/agents/feedback/`) — separate FastAPI service that runs video review jobs (OpenAI + ffmpeg/OpenCV). The platform worker can **delegate** feedback jobs to it over HTTP when `FEEDBACK_AGENT_BASE_URL` is set.
+1. **Platform API** (`app/backendapi/`) — sheets, sync, auth, workspace/agent job orchestration.
+2. **RQ worker** — sheet sync + feedback jobs (`get_feedback_agent().run_review(...)`).
 
-You can run only the platform (without the feedback agent), or run both when you need automated video reviews from workspace jobs.
+Optional extras:
+
+- **Standalone feedback HTTP** (`uvicorn agents.feedback.main:app` on `:5055`) — only if `FEEDBACK_DELEGATE_HTTP=true` and `FEEDBACK_AGENT_BASE_URL` are set (legacy).
+- **Pose API** (`app/pose_api`) — only if `FEEDBACK_USE_POSE_PIPELINE=true` and usually `POSE_API_BASE_URL`.
+
+See [`docs/feedback-agents-yolo-pose.md`](docs/feedback-agents-yolo-pose.md) for switching YOLO / pose and plugging in agent versions.
 
 ## Architecture and processes
 
@@ -40,48 +46,48 @@ At a high level, local or production setups involve these processes:
 
 | Process | Role |
 |--------|------|
-| **Platform API** (`uvicorn backendapi.main:app`) | HTTP API, OAuth, enqueueing sync jobs, workspace context refresh, agent job creation. Listens on port **8000** by default. |
-| **RQ worker** (`python -m backendapi.workers.run_worker`) | Consumes **Redis** queues `SYNC_QUEUE_NAME` (default `sheet-sync`) and `WORKSPACE_QUEUE_NAME` (default `agent-workspace`). Runs sheet sync jobs, refreshes workspace snapshots from the **destination** sheet, and optionally **POST**s feedback work to the feedback agent. |
+| **Platform API** (`uvicorn backendapi.main:app`) | HTTP API, OAuth, enqueueing sync jobs, workspace context refresh, agent job creation. Port **8000**. |
+| **RQ worker** (`python -m backendapi.workers.run_worker`) | Redis queues for sheet sync + workspace/feedback jobs. Runs the selected feedback agent **in-process** by default (`FEEDBACK_AGENT_VERSION`). |
 | **Redis** | Job queue backend for RQ. |
 | **Postgres** (or SQLite for quick dev) | Application database (`DATABASE_URL`). |
-| **Feedback agent** (`uvicorn agents.feedback.main:app`) | Optional. Accepts `POST /api/reviews`, runs review pipeline, stores reviews under `DATA_DIR`. Default port **5055**. |
+| **Feedback HTTP agent** (`uvicorn agents.feedback.main:app`) | **Legacy / optional.** Only when `FEEDBACK_DELEGATE_HTTP=true` and `FEEDBACK_AGENT_BASE_URL` are set. Port **5055**. |
+| **Pose API** (`uvicorn pose_api.main:app`) | **Optional.** GPU pose when `FEEDBACK_USE_POSE_PIPELINE=true`. Port **5060**. |
 
-Typical flow when everything is enabled:
+Typical flow:
 
 1. User connects Google Sheets and sync runs (worker + destination sheet).
-2. After a successful sync, the worker may enqueue a **workspace context** job (destination sheet snapshot).
-3. When a **feedback** `AgentJob` is created in the platform, the worker calls `FEEDBACK_AGENT_BASE_URL` (if set) with `POST /api/reviews` and polls until the agent reports completion.
+2. After a successful sync, the worker may enqueue a **workspace context** job.
+3. When a **feedback** `AgentJob` is created, the worker attaches personal/shared RAG context and calls `get_feedback_agent().run_review(...)` (unless legacy HTTP delegate is enabled).
 
 ## Configuration (local and Docker use the same files)
 
 | File | Purpose |
 |------|--------|
-| **`app/backendapi/.env`** | Primary application config: OAuth, `DATABASE_URL`, `REDIS_URL`, player memory, destination sheet, etc. Used when you run `make run-api` / `make run-worker` locally and **mounted into API/worker containers** when using Compose. |
-| **`.env`** (repo root, optional) | Copy from **`.env.example`** at the repo root. Used only for Compose **interpolation** (ports, `GOOGLE_CREDENTIALS_FILE_HOST`, optional `CLOUD_SQL_CONNECTION_NAME`). Application URLs and secrets belong in **`app/backendapi/.env`**. |
-| **`app/agents/.env`** | Feedback agent secrets (`OPENAI_API_KEY`, etc.). Used by the feedback container via `env_file`; mirror variables locally when running `make run-feedback`. |
+| **`app/backendapi/.env`** | Primary application config: OAuth, `DATABASE_URL`, `REDIS_URL`, player memory, destination sheet, `FEEDBACK_AGENT_VERSION`, YOLO/pose toggles. Used by `make run-api` / `make run-worker` and mounted into API/worker containers. |
+| **`.env`** (repo root, optional) | Copy from **`.env.example`**. Compose **interpolation** only (ports, credentials path, Cloud SQL). |
 
 At runtime, the platform loads **`app/backendapi/.env` first**, then merges **repo-root `.env`** only for keys that are still unset (`override=False`).
 
-For Docker, set in-cluster URLs in **`app/backendapi/.env`**: `REDIS_URL=redis://redis:6379/0`, `FEEDBACK_AGENT_BASE_URL=http://feedback-agent:5055`, and `DATABASE_URL` pointing at Cloud SQL (private IP or `cloud-sql-proxy` — see **GCP VM** below).
+For Docker, set in-cluster URLs in **`app/backendapi/.env`**: `REDIS_URL=redis://redis:6379/0`, and `DATABASE_URL` pointing at Cloud SQL (private IP or `cloud-sql-proxy` — see **GCP VM** below). Feedback runs in-process on the worker by default (`FEEDBACK_AGENT_VERSION=v1`). Only set `FEEDBACK_AGENT_BASE_URL` + `FEEDBACK_DELEGATE_HTTP=true` if you intentionally use the legacy HTTP agent.
 
-Player memory SQL/vector runtime settings are now managed from the admin panel (`/admin/player-memory`) and persisted encrypted in the DB. Keep `PLAYER_MEMORY_SETTINGS_MASTER_KEY` set in `app/backendapi/.env`; `PLAYER_CONTEXT_*`, `PINECONE_*`, and chunk/retrieval values in env act as bootstrap defaults until admin settings are saved.
+Player memory SQL/vector runtime settings are managed from the admin panel (`/admin/player-memory`) and persisted encrypted in the DB (Firestore). Keep `PLAYER_MEMORY_SETTINGS_MASTER_KEY` set in `app/backendapi/.env`.
 
 ## Frontend (Next.js)
 
-The browser UI lives in **`agentic-frontend/`** (Next.js 15, App Router). Run it alongside the platform API:
+The browser UI lives in **`athlete-agent-frontend/`** (sibling repo / Next.js 15). Run it alongside the platform API:
 
 ```bash
-cd agentic-frontend && cp .env.example .env.local && npm install && npm run dev
+cd athlete-agent-frontend && cp .env.example .env.local && npm install && npm run dev
 ```
 
-Set `FRONTEND_BASE_URL=http://localhost:3000` in `app/backendapi/.env`. See [`agentic-frontend/README.md`](agentic-frontend/README.md) for routes and env details.
+Set `FRONTEND_BASE_URL=http://localhost:3000` in `app/backendapi/.env`.
 
 ## Run locally (venv)
 
 Prerequisites: **Python 3.11+**, **Redis** (e.g. `brew services start redis`), and **`app/backendapi/.env`** from `app/backendapi/.env.example`.
 
 - **General platform dev:** SQLite works if `DATABASE_URL` is omitted (defaults to `sqlite:///./app.db`).
-- **Player vector memory:** PostgreSQL with **`pgvector`** (`CREATE EXTENSION vector`). Not available on SQLite.
+- **Player vector memory:** Firestore (see admin Player Memory settings). App DB can be Postgres or SQLite for local platform data.
 
 ```bash
 make setup-app
@@ -96,7 +102,7 @@ Terminals:
 make run-api
 make run-worker
 make run-feedback    # optional
-cd agentic-frontend && npm run dev   # UI on http://localhost:3000
+cd athlete-agent-frontend && npm run dev   # UI on http://localhost:3000
 ```
 
 Or from **`app/backendapi/`** (with venv activated or `./run.sh` using `app/backendapi/venv`):
@@ -136,53 +142,39 @@ python -m backendapi.workers.run_worker
 
 Health check: [http://localhost:8000/health](http://localhost:8000/health)
 
-## Local development: platform and feedback agent
+## Local development: platform (default — in-process feedback)
 
-Prerequisites for the feedback agent: **ffmpeg** on your `PATH` (for example `brew install ffmpeg` on macOS), and an **OpenAI API key**.
+Prerequisites for feedback: **ffmpeg** on `PATH`, and **`OPENAI_API_KEY`** in `app/backendapi/.env`.
 
-**Terminal 1 — platform API** (same as above):
+**Terminal 1 — platform API:**
 
 ```bash
 source .venv-app/bin/activate
 uvicorn backendapi.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Terminal 2 — RQ worker** (must see the same `FEEDBACK_AGENT_BASE_URL` as in `.env`):
+**Terminal 2 — RQ worker** (runs the selected feedback agent in-process):
 
 ```bash
 source .venv-app/bin/activate
 python -m backendapi.workers.run_worker
 ```
 
-**Terminal 3 — feedback agent** (from repository root so `agents` is importable). Create a dedicated agent venv and install agent dependencies:
+```bash
+# app/backendapi/.env
+FEEDBACK_AGENT_VERSION=v1
+# FEEDBACK_DELEGATE_HTTP=false   # default — do not require :5055
+```
+
+### Legacy: separate feedback HTTP agent
+
+Only if you set `FEEDBACK_DELEGATE_HTTP=true` and `FEEDBACK_AGENT_BASE_URL=http://127.0.0.1:5055`:
 
 ```bash
 make setup-agents
-```
-
-```bash
-python3 -m venv .venv-agents
-source .venv-agents/bin/activate   # Windows: .venv-agents\Scripts\activate
-pip install -r app/agents/requirements.txt
-export OPENAI_API_KEY=sk-...   # or add OPENAI_API_KEY to a .env file in this directory
 PYTHONPATH=app uvicorn agents.feedback.main:app --host 0.0.0.0 --port 5055
+# or: make run-feedback
 ```
-
-Run shortcuts:
-
-```bash
-make run-api
-make run-worker
-OPENAI_API_KEY=sk-... make run-feedback
-```
-
-In the **platform** `app/backendapi/.env` (used by the API and worker), set:
-
-```bash
-FEEDBACK_AGENT_BASE_URL=http://127.0.0.1:5055
-```
-
-For local feedback setup, prefer **`make run-feedback`**; Compose can run the same agent image instead if you use **`make run-all`**.
 
 ## Run with Docker (same `app/backendapi/.env` + optional repo-root `.env`)
 
@@ -191,10 +183,9 @@ For local feedback setup, prefer **`make run-feedback`**; Compose can run the sa
 ```bash
 cp app/backendapi/.env.example app/backendapi/.env
 cp .env.example .env
-cp app/agents/.env.example app/agents/.env
 ```
 
-Edit **`app/backendapi/.env`** with OAuth, secrets, and Docker URLs (`REDIS_URL`, `FEEDBACK_AGENT_BASE_URL`, `DATABASE_URL`).
+Edit **`app/backendapi/.env`** with OAuth, secrets, and Docker URLs (`REDIS_URL`, `DATABASE_URL`). Keep `FEEDBACK_AGENT_VERSION=v1` unless you have implemented another agent.
 
 2) Start the stack:
 
@@ -314,8 +305,10 @@ Copy `app/backendapi/.env.example` to `app/backendapi/.env` and adjust values. T
 |----------|----------|--------|
 | `WORKSPACE_QUEUE_NAME` | No | `agent-workspace`; must match worker queue subscription |
 | `WORKSPACE_SNAPSHOT_MAX_ROWS` | No | `500` cap when snapshotting destination sheet for workspace |
-| `FEEDBACK_AGENT_BASE_URL` | No | If empty, feedback delegate jobs fail with a clear message. Set to feedback agent URL, e.g. `http://127.0.0.1:5055` |
-| `FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS` | No | `30` for HTTP client when calling the agent |
+| `FEEDBACK_AGENT_VERSION` | No | `v1` (default). Set `v2` after implementing `agents/feedback_v2`. See `docs/feedback-agents-yolo-pose.md`. |
+| `FEEDBACK_AGENT_BASE_URL` | No | Only for legacy HTTP delegate (`FEEDBACK_DELEGATE_HTTP=true`), e.g. `http://127.0.0.1:5055` |
+| `FEEDBACK_DELEGATE_HTTP` | No | `false` (default). In-process feedback does not need `:5055`. |
+| `FEEDBACK_AGENT_HTTP_TIMEOUT_SECONDS` | No | `30` when using HTTP delegate |
 
 ### Platform — optional source / workflow / sync tuning
 
@@ -332,21 +325,19 @@ Copy `app/backendapi/.env.example` to `app/backendapi/.env` and adjust values. T
 | `SYNC_HASH_FIELDS` | Optional comma-separated fields for row hashing |
 | `ENV_FILE` | `.env` path override (see `app/core/env_loader.py`) |
 
-### Feedback agent (`app/agents/feedback/`)
+### Feedback agent (in-process v1 / optional HTTP)
 
-These apply to the **feedback agent process** (or its container). At startup the agent loads, in order: the **current working directory** `.env` (usually the repo root when you run `uvicorn` from there), then **`app/agents/.env`** if it exists (overrides for agent-level secrets). Template: `app/agents/.env.example` — copy it to `app/agents/.env` (gitignored) or set the same variables in the repo root `.env`.
+OpenAI and video settings for **in-process** feedback live in **`app/backendapi/.env`** (same process as the worker). For the **legacy** standalone HTTP agent (`make run-feedback`), use the same variables in the environment or a local `.env` next to where you start uvicorn.
 
 | Variable | Required | Default / notes |
 |----------|----------|-----------------|
-| `OPENAI_API_KEY` | **Yes** (for reviews) | Used by `openai_service` for storyboard and manual feedback |
+| `OPENAI_API_KEY` | **Yes** (for reviews) | Used by `openai_service` |
 | `OPENAI_MODEL` | No | `gpt-4.1-mini` |
-| `DATA_DIR` | No | Defaults to `app/agents/feedback/data` under the package (persistent review storage) |
-| `HOST` | No | `127.0.0.1` (used when building `review_url` if `FRONTEND_BASE_URL` and `PUBLIC_BASE_URL` are unset) |
-| `PORT` | No | `5055` (match the port you pass to `uvicorn`) |
-| `FRONTEND_BASE_URL` | Recommended | Next.js origin for share/review links (e.g. `http://localhost:3000` or `http://VM_IP:3000`). Docker also loads this from `app/backendapi/.env`. |
-| `PUBLIC_BASE_URL` | No | Fallback origin if `FRONTEND_BASE_URL` is unset |
+| `FEEDBACK_AGENT_VERSION` | No | `v1` — see `docs/feedback-agents-yolo-pose.md` |
+| `DATA_DIR` | No | Defaults to `app/agents/feedback/data` |
+| `FRONTEND_BASE_URL` | Recommended | Next.js origin for share/review links |
 
-**System dependency:** `ffmpeg` must be installed on the host (or in the agent Docker image) for video frame extraction.
+**System dependency:** `ffmpeg` must be installed on the host (or worker image) for video frame extraction.
 
 ## Endpoints
 

@@ -101,7 +101,7 @@ curl -s https://abcdefghijkl-5060.proxy.runpod.net/health
 
 ### 6. Point the main VM at RunPod
 
-On the **GCP VM** (`app/agents/.env` for feedback-agent):
+On the **GCP VM** (`app/backendapi/.env` for API/worker, or feedback-agent env if using legacy HTTP):
 
 ```env
 POSE_API_BASE_URL=https://abcdefghijkl-5060.proxy.runpod.net
@@ -143,10 +143,22 @@ Agent Lab → worker (Firestore RAG) → feedback-agent POST /api/reviews
 ## Local smoke test (no RunPod)
 
 ```bash
-# Terminal 1
+# Terminal 1 — pose API
 bash scripts/run-pose-api.sh
 
-# Terminal 2 — feedback-agent with remote pose
+# Terminal 2 — API + worker with remote pose (in-process feedback)
+# In app/backendapi/.env:
+#   FEEDBACK_USE_POSE_PIPELINE=true
+#   POSE_PIPELINE_REMOTE_ONLY=true
+#   POSE_API_BASE_URL=http://127.0.0.1:5060
+#   FEEDBACK_AGENT_VERSION=v1
+make run-api
+make run-worker
+```
+
+Legacy standalone feedback HTTP (only if `FEEDBACK_DELEGATE_HTTP=true`):
+
+```bash
 export POSE_API_BASE_URL=http://127.0.0.1:5060
 PYTHONPATH=app uvicorn agents.feedback.main:app --port 5055
 ```

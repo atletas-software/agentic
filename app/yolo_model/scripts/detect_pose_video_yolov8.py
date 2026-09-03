@@ -1,6 +1,6 @@
 """Highlight YOLO + YOLOv8-Pose pipeline for highlighted-player feedback.
 
-Two-pass design (see .cursor/plans/pose_backend_choice.plan.md):
+Two-pass design:
 
 1. Custom highlight YOLO + ByteTrack on the full frame -> top-1 bbox of the
    red-circled player.

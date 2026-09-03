@@ -1,6 +1,0 @@
-# Minimal deps for tracker.py on RunPod / headless servers.
-# Pin OpenCV: 4.13 Linux wheels sometimes ship legacy/ without CSRT trackers.
-opencv-contrib-python-headless==4.10.0.84
-numpy>=1.24.0
-ultralytics>=8.3.0
-openai>=1.0.0

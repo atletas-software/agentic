@@ -22,6 +22,7 @@ from backendapi.services.feedback_public_url import (
     feedback_public_watch_url,
 )
 from backendapi.services.feedback_runner import run_feedback_review_inprocess
+from agents.registry import resolve_feedback_agent_version
 from backendapi.services.sheet_sync import SYNC_DESTINATION_HEADERS
 from backendapi.services.player_directory import resolve_player_key_by_name
 from backendapi.services.pose_video_pipeline import (
@@ -711,6 +712,7 @@ def process_feedback_delegate_job(agent_job_id: int) -> dict[str, str | bool]:
             {
                 "id": review_id,
                 "feedback_execution": "in_process",
+                "feedback_agent_version": resolve_feedback_agent_version(),
                 "feedback_poll": "completed",
                 "review_url": review_url,
                 "watch_url": watch_url,
